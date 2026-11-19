@@ -1,20 +1,25 @@
+# MathAudit: single-instance web app with persistent SQLite and uploaded scans.
+# Review paid service + disk charges before approving the first Render Blueprint sync.
 services:
   - type: web
     name: math-equation-audit
     runtime: python
+    region: frankfurt
+    plan: starter
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn backend.app:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /api/health
+    disk:
+      name: math-audit-data
+      mountPath: /var/data
+      sizeGB: 1
     envVars:
       - key: APP_ENV
         value: production
       - key: APP_ACCESS_TOKEN
-        sync: false
-      - key: MATHPIX_APP_ID
-        sync: false
-      - key: MATHPIX_APP_KEY
-        sync: false
+        generateValue: true
       - key: DATA_DIR
         value: /var/data/math-equation-audit
-# ATTENTION: attach a persistent disk at /var/data or switch DATA_DIR
-# before real use. Without disk, files and database are ephemeral.
+# Optional OCR credentials (MATHPIX_APP_ID, MATHPIX_APP_KEY) must be added
+# privately in Render's Environment page after deployment, if used.
+# App is intentionally limited to a single protected reviewer.
