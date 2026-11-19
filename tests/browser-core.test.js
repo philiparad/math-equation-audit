@@ -61,3 +61,8 @@ test('backup validates references and duplicate IDs',()=>{
     assert.throws(()=>validateBackupManifest({...p,questions:[{id:'q',pageId:'missing'}]}));
     assert.throws(()=>validateBackupManifest({...p,pages:[{id:'../path'}]}));
 });
+
+test('verified export ignores invalid approval metadata even if status is verified',()=>{
+    const fake={...q(),status:'verified',review:{reviewer:'Teacher',checks:{source:true}}};
+    assert.equal(latexRows([fake],true).length,0);
+});

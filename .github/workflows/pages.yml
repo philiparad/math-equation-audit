@@ -1,39 +1,28 @@
-name: Test and deploy serverless MathAudit to GitHub Pages
+name: Validate MathAudit Browser Edition
 on:
   push:
     branches: [browser-only]
     paths:
       - 'frontend/**'
-      - 'tests/browser-core.test.js'
+      - 'tests/**'
+      - 'tools/**'
       - 'package.json'
       - '.github/workflows/pages.yml'
-  workflow_dispatch:
+  pull_request:
+    branches: [browser-only]
 permissions:
   contents: read
-  pages: write
-  id-token: write
-concurrency:
-  group: mathaudit-github-pages
-  cancel-in-progress: true
 jobs:
-  verify-and-deploy:
+  validate:
     runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - name: Static checks
+      - name: JavaScript syntax
         run: npm run check
-      - name: Unit tests
+      - name: OCR and review tests
         run: npm test
-      - uses: actions/configure-pages@v5
-      - uses: actions/upload-pages-artifact@v3
-        with:
-          path: ./frontend
-      - name: Deploy GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v4
+# Live static files are served from philiparad/philiparad.github.io/math-equation-audit.
+# This repository is authoritative source; sync validated frontend changes to the hosting repo.

@@ -71,3 +71,21 @@ npm test
 ```
 
 A browser smoke test can be executed via Chromium with a static HTTP server. For the actual ONNX models and Mathpix, use real browser network access and an actual short-lived token respectively, then compare their output to each scanned crop.
+
+## OCR correction and equation display update (2026-11-19)
+
+- `TexTeller-ONNX` was replaced by `TexTeller3-ONNX` because the previous model lacked
+  the quantized *merged* decoder requested by Transformers.js v4. Both local models
+  now use an explicit `q8` ONNX variant and preserve WASM fallback.
+- For higher accuracy, select **math-only OCR region** from the original question
+  (one equation at a time). This extra image is saved separately; original full
+  question and original page remain unchanged.
+- Each OCR candidate and the final edited LaTeX have a rendered MathJax preview,
+  in addition to the raw LaTeX text. MathJax loading failure is visible to reviewers.
+- Editing an approved transcript requires re-review. OCR changes cannot silently
+  discard unsaved LaTeX. A full ZIP backup now also preserves math-only subcrops.
+- Measure actual recognition accuracy using `node tools/ocr-accuracy.mjs VERIFIED_EXPORT.json`
+  after manually verifying a representative test set. **Live model inference has not
+  been verified here**, and no OCR model can guarantee correct transcription.
+
+See `docs/AUDIT_REPORT_2026-11-19.md` for identified issues, fixes, and remaining risks.
