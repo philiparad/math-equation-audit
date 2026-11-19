@@ -1,0 +1,3 @@
+-r requirements.txt
+# Optional local OCR. Large CPU/GPU models download on first use.
+pix2text>=1.1.2

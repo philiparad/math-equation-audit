@@ -1,0 +1,20 @@
+services:
+  - type: web
+    name: math-equation-audit
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn backend.app:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /api/health
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: APP_ACCESS_TOKEN
+        sync: false
+      - key: MATHPIX_APP_ID
+        sync: false
+      - key: MATHPIX_APP_KEY
+        sync: false
+      - key: DATA_DIR
+        value: /var/data/math-equation-audit
+# ATTENTION: attach a persistent disk at /var/data or switch DATA_DIR
+# before real use. Without disk, files and database are ephemeral.
