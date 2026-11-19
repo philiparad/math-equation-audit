@@ -20,7 +20,7 @@
 | UI-003 | Medium | Existing author CSS may override HTML `[hidden]` attributes | Add `[hidden]{display:none!important}` |
 | REVIEW-001 | High | Running OCR or creating a crop could discard unsaved LaTeX | Prevent both operations until transcript is saved |
 | REVIEW-003 | Medium | Switching interface language could discard unsaved edits | Prompt before switching and clear dirty state only with consent |
-| REVIEW-002 | High | Editing a verified transcript could leave old checked UI boxes visible | Immediately clear visual-review checkboxes and show 'needs review' badge when transcript changes |
+| REVIEW-002 | High | Editing a verified transcript or selecting an OCR hypothesis could leave old checked UI boxes visible | Dispatch the same edit event and clear visual-review checkboxes, requiring a fresh review |
 | DATA-001 | High | Full backups omitted newly introduced OCR-only crops | Export/restore OCR crop PNGs separately; preserve original crop and don't serialize blobs in JSON manifest |
 | QA-001 | Medium | No way to quantify OCR correctness against known-good transcriptions | Add `node tools/ocr-accuracy.mjs <verified-export.json>`; exact normalized transcriptions only, never algebraic equivalence |
 | DATA-002 | Medium | Exporting backup records solely by status could include forged or stale verification metadata | Require a valid reviewer and all four source checks before verified-only export |
