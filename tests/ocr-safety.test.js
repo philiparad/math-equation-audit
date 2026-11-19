@@ -51,6 +51,7 @@ test('HTML gives each OCR a math-only crop and MathJax panel',()=>{
     assert.match(app,/renderMath\(math,obj\.latex\)/);
     assert.match(app,/renderMath\(target,latex\)/);
     assert.match(app,/original\.ocrBlob\|\|original\.blob/);
+    assert.match(app,/dispatchEvent\(new Event\('input'/); // Re-review on chosen OCR hypothesis.
     assert.match(css,/\[hidden\]\{display:none!important\}/);
 });
 
