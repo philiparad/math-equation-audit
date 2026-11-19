@@ -1,0 +1,11 @@
+{
+  "name": "mathaudit-browser",
+  "private": true,
+  "type": "module",
+  "version": "1.0.0",
+  "description": "Pure static mathematical OCR audit application for GitHub Pages",
+  "scripts": {
+    "test": "node --test tests/browser-core.test.js",
+    "check": "node --check frontend/app.js && node --check frontend/core.js && node --check frontend/ocr.js && node --check frontend/storage.js && node --check frontend/math-worker.js && node --check frontend/math-client.js && node --check frontend/export.js"
+  }
+}

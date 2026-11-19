@@ -2,162 +2,109 @@
 <html lang="he" dir="rtl">
 <head>
     <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
-    <meta name="theme-color" content="#162f42">
-    <title>MathAudit — חילוץ ובקרת משוואות</title>
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <meta name="theme-color" content="#284866">
+    <meta name="description" content="MathAudit — חילוץ ואימות מתמטי של משוואות ללא שרת">
     <link rel="icon" type="image/svg+xml" href="./favicon.svg">
-    <link rel="stylesheet" href="./app.css">
+    <link rel="stylesheet" href="./styles.css">
+    <title>MathAudit · בדיקת משוואות ללא שרת</title>
     <script>
-        window.MathJax = {
-            tex: {inlineMath: [['\\(', '\\)']], displayMath: [['\\[', '\\]']],
-                  packages: {'[+]': ['noerrors', 'noundefined']}},
-            loader: {load: ['[tex]/noerrors', '[tex]/noundefined']},
-            options: {skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code']},
-            startup: {typeset: false}
-        };
+        window.MathJax={tex:{inlineMath:[['\\(','\\)']],displayMath:[['\\[','\\]']],processEscapes:true,
+            packages:{'[+]':['noerrors']}},options:{skipHtmlTags:['script','noscript','style','textarea','pre','code']},
+            svg:{fontCache:'global'}};
     </script>
-    <script defer src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml.js"></script>
-    <script defer src="./config.js"></script>
-    <script defer src="./app.js"></script>
+    <script async src="https://cdn.jsdelivr.net/npm/mathjax@3.2.2/es5/tex-svg.js"></script>
+    <script type="module" src="./app.js"></script>
 </head>
 <body>
     <header class="topbar">
-        <div class="brand">
-            <div class="brand-mark" aria-hidden="true">∑</div>
-            <div><div class="brand-name">Math<span>Audit</span></div><div class="brand-sub" data-i18n="subtitle">חילוץ משוואות עם אימות אנושי</div></div>
+        <div class="branding">
+            <img src="./favicon.svg" width="38" height="38" alt="">
+            <div><h1>MathAudit <span>Browser Edition</span></h1><p data-i18n="tagline">חילוץ משוואות ואימות אנושי — ללא שרת</p></div>
         </div>
-        <div class="topbar-actions">
-            <span class="connection-status" id="connection"><span class="status-dot"></span><span data-i18n="connecting">מתחבר…</span></span>
-            <button class="button subtle small" id="langBtn" type="button" title="Language / שפה">EN</button>
-            <button class="button subtle small" id="settingsBtn" type="button"><span>⚙</span> <span data-i18n="settings">הגדרות</span></button>
-            <button class="button primary" id="uploadBtn" type="button"><span>＋</span> <span data-i18n="upload">ייבוא סריקות</span></button>
-            <input id="fileInput" type="file" multiple accept="image/png,image/jpeg,image/webp,image/tiff,application/pdf" hidden>
+        <div class="header-actions">
+            <span class="private-pill" data-i18n="private">🔒 הנתונים נשמרים בדפדפן</span>
+            <button type="button" id="langBtn" class="ghost small" aria-label="Switch language">EN</button>
+            <button type="button" id="settingsBtn" class="ghost" data-i18n="settings">הגדרות</button>
+            <button type="button" id="backupBtn" class="ghost" data-i18n="backup">גיבוי מלא</button>
+            <button type="button" id="exportBtn" class="primary" data-i18n="export">ייצוא משוואות</button>
         </div>
     </header>
-    <div class="workspace-shell">
-        <section class="overview" aria-label="Summary">
-            <div class="metric"><span data-i18n="pages">עמודים</span><strong id="pagesCount">0</strong></div>
-            <div class="metric"><span data-i18n="questions">שאלות</span><strong id="questionsCount">0</strong></div>
-            <div class="metric"><span data-i18n="reviewNeeded">ממתינות לבדיקה</span><strong id="pendingCount">0</strong></div>
-            <div class="metric verified"><span data-i18n="verified">אומתו חזותית</span><strong id="verifiedCount">0</strong></div>
-            <div class="overview-right">
-                <button class="button outline small" id="exportBtn" type="button"><span>↓</span> <span data-i18n="export">ייצוא תוצאות</span></button>
+    <main class="workspace">
+        <aside class="sidebar surface" aria-label="Pages and questions">
+            <section class="sidebar-block">
+                <div class="section-heading"><h2 data-i18n="sourcePages">עמודי מקור</h2><span id="pageCount" class="count">0</span></div>
+                <button type="button" id="importBtn" class="primary full" data-i18n="import">＋ העלאת תמונה או PDF</button>
+                <input type="file" id="fileInput" accept="image/png,image/jpeg,image/webp,application/pdf" multiple hidden>
+                <button type="button" id="sampleBtn" class="ghost full" data-i18n="sample">פתח דף דוגמה</button>
+                <div id="pageList" class="entry-list"></div>
+            </section>
+            <section class="sidebar-block question-block">
+                <div class="section-heading"><h2 data-i18n="questions">שאלות</h2><span id="questionCount" class="count">0</span></div>
+                <div id="questionList" class="entry-list"><p class="empty" data-i18n="selectPage">בחר עמוד כדי להתחיל</p></div>
+            </section>
+        </aside>
+        <section class="source surface">
+            <div class="panel-header"><div><p class="eyebrow" data-i18n="step1">שלב 1 · סימון המקור</p><h2 data-i18n="sourceScan">הסריקה המקורית</h2></div>
+                <button id="deletePageBtn" type="button" class="danger ghost" disabled data-i18n="deletePage">מחק עמוד</button></div>
+            <p class="helper" data-i18n="cropHelp">בחר עמוד וגרור מלבן סביב שאלה שלמה. כלול מספר שאלה, מונים, מכנים וחזקות.</p>
+            <div id="pageStage" class="page-stage">
+                <div id="emptyStage" class="stage-empty"><div class="big-icon">▧</div><strong data-i18n="start">העלה סריקה כדי להתחיל</strong><span data-i18n="startHelp">או פתח דף דוגמה סינתטי</span></div>
+                <div id="imageWrap" class="image-wrap" hidden><img id="pageImage" alt="Scanned page"><div id="selection" class="selection" hidden></div></div>
+            </div>
+            <div class="crop-row"><label for="labelInput" data-i18n="questionNumber">מספר שאלה</label><input id="labelInput" type="text" maxlength="48" placeholder="15" autocomplete="off">
+                <button type="button" id="cropBtn" class="primary" disabled data-i18n="saveCrop">צור שאלה מהחיתוך</button>
+                <button type="button" id="resetCropBtn" class="ghost" disabled data-i18n="clearCrop">נקה בחירה</button></div>
+            <div class="coverage"><label for="expectedInput" data-i18n="expected">מספרי שאלות צפויים בעמוד</label>
+                <div class="inline-fields"><input id="expectedInput" type="text" placeholder="15-36, 40, 41" dir="ltr"><button id="coverageBtn" type="button" class="ghost" disabled data-i18n="coverage">בדוק שלמות</button></div>
+                <div id="coverageResult" class="coverage-result" aria-live="polite"></div></div>
+        </section>
+        <section class="review surface">
+            <div class="panel-header"><div><p class="eyebrow" data-i18n="step2">שלבים 2–4 · זיהוי, בדיקה ואישור</p><h2 data-i18n="review">בקרת המשוואה</h2></div><span id="reviewBadge" class="status-pill neutral">—</span></div>
+            <div id="reviewEmpty" class="review-empty"><div class="big-icon">∑</div><strong data-i18n="chooseQuestion">בחר שאלה לעריכה ולאימות</strong></div>
+            <div id="reviewContent" hidden>
+                <div class="original-title"><h3 data-i18n="original">חיתוך מקורי — ללא שינוי</h3><button id="zoomBtn" type="button" class="text-button" data-i18n="zoom">הצג בגודל מלא</button></div>
+                <div class="crop-preview"><img id="cropImage" alt="Original question crop"></div>
+                <div class="subhead"><h3 data-i18n="ocr">מנועי OCR עצמאיים</h3><span class="hint" data-i18n="ocrHint">התוצאה אוטומטית, לא מאומתת</span></div>
+                <div class="ocr-buttons"><button id="texifyBtn" type="button" class="ghost">Texify2 · ONNX</button><button id="textellerBtn" type="button" class="ghost">TexTeller · ONNX</button><button id="mathpixBtn" type="button" class="ghost">Mathpix · API</button></div>
+                <div id="ocrResults" class="ocr-results"></div>
+                <div id="ocrComparison" class="comparison" aria-live="polite"></div>
+                <label class="subhead standalone" for="latexInput" data-i18n="latex">LaTeX סופי לעריכה</label>
+                <textarea id="latexInput" dir="ltr" spellcheck="false" rows="3" placeholder="\frac{x+1}{x-2}=0"></textarea>
+                <div class="actions"><button id="saveBtn" type="button" class="ghost" data-i18n="save">שמור תמלול</button><button id="checkMathBtn" type="button" class="ghost" data-i18n="checkMath">בדיקה אלגברית</button></div>
+                <div class="rendered"><div class="minor-label" data-i18n="preview">תצוגה מתמטית</div><div id="mathPreview" class="math-output" dir="ltr"></div></div>
+                <div id="analysisResult" class="analysis" aria-live="polite"></div>
+                <div class="divider"></div>
+                <h3 data-i18n="reviewChecklist">אימות אנושי מחייב</h3>
+                <p class="helper" data-i18n="reviewExplain">יש להשוות חזותית לתמונה המקורית; התאמת שני מנועי OCR איננה מספיקה.</p>
+                <div class="checklist">
+                    <label><input id="checkSource" type="checkbox"><span data-i18n="checkSource">השוויתי את כל המשוואה לתמונה המקורית</span></label>
+                    <label><input id="checkSymbols" type="checkbox"><span data-i18n="checkSymbols">בדקתי כל ספרה, סימן וחזקה</span></label>
+                    <label><input id="checkFractions" type="checkbox"><span data-i18n="checkFractions">בדקתי סוגריים, שברים, מונים ומכנים</span></label>
+                    <label><input id="checkDomain" type="checkbox"><span data-i18n="checkDomain">בדקתי תחום הצבה וערכים אסורים, ככל שנדרש</span></label>
+                </div>
+                <div class="review-fields"><label data-i18n="reviewer">שם הבודק/ת<input id="reviewerInput" type="text" autocomplete="name" maxlength="100" placeholder="שם מלא"></label>
+                <label data-i18n="notes">הערות<textarea id="notesInput" rows="2"></textarea></label>
+                <label class="toggle"><input id="sourceErrorInput" type="checkbox"><span data-i18n="sourceError">חשד לשגיאה בספר המקורי</span></label></div>
+                <div class="actions final-actions"><button id="verifyBtn" type="button" class="primary" data-i18n="verify">אמת לאחר השוואה למקור</button><button id="reopenBtn" type="button" class="ghost" data-i18n="reopen">פתח לבדיקה חוזרת</button><button id="deleteQuestionBtn" type="button" class="danger ghost" data-i18n="deleteQuestion">מחק שאלה</button></div>
             </div>
         </section>
-        <div class="app-layout">
-            <aside class="sidebar panel">
-                <div class="panel-heading">
-                    <div><h2 data-i18n="sourcePages">עמודי מקור</h2><p data-i18n="selectPage">בחרו עמוד לצפייה ולחיתוך</p></div>
-                    <button class="icon-button" id="refreshBtn" title="Refresh">↻</button>
-                </div>
-                <div id="pageList" class="page-list"><div class="empty-side" data-i18n="noPages">לא הועלו עמודים עדיין</div></div>
-                <div class="sidebar-divider"></div>
-                <div class="panel-heading compact">
-                    <div><h2 data-i18n="questionList">רשימת שאלות</h2><p id="listSub" data-i18n="selectQuestion">בחרו שאלה לעריכה ולאימות</p></div>
-                </div>
-                <div class="filter-row"><button class="filter-chip active" data-filter="all" data-i18n="all">הכול</button><button class="filter-chip" data-filter="needs_review" data-i18n="pending">לבדיקה</button><button class="filter-chip" data-filter="verified" data-i18n="verifiedShort">אומתו</button></div>
-                <div id="questionList" class="question-list"><div class="empty-side" data-i18n="noQuestions">אין שאלות בעמוד זה</div></div>
-            </aside>
-
-            <main class="scan-column">
-                <section class="panel scan-panel">
-                    <div class="section-top">
-                        <div><span class="eyebrow" data-i18n="stepOne">שלב 1 · בחירת המקור</span><h2 id="scanTitle" data-i18n="scanArea">העמוד הסרוק</h2><p data-i18n="cropGuide">גררו מלבן סביב משוואה או שאלה מלאה. שמרו גם את המספר ואת כל המכנים.</p></div>
-                        <div class="scan-tools"><button class="button subtle small" id="pageZoomOut" type="button" title="Zoom out">−</button><button class="button subtle small" id="pageZoomIn" type="button" title="Zoom in">＋</button><button class="button outline small" id="batchOCR" type="button" data-i18n="batchOCR" title="OCR only blank pending questions">זיהוי כל השאלות החדשות</button><button class="button subtle small" id="clearSelection" type="button" data-i18n="clearSelection">נקה בחירה</button><button class="button subtle small danger-text" id="deletePage" type="button" disabled data-i18n="deletePage">מחק עמוד</button></div>
-                    </div>
-                    <div class="scan-stage" id="scanStage">
-                        <div class="scan-empty" id="scanEmpty">
-                            <div class="empty-illustration"><span>∫</span><span>√</span><span>π</span></div>
-                            <h3 data-i18n="startTitle">מתחילים עם סריקה</h3>
-                            <p data-i18n="startBody">העלו תמונות או PDF של ספר הלימוד. לאחר מכן סמנו בעכבר את המשוואות שתרצו לחלץ.</p>
-                            <button class="button primary" id="startUpload" type="button" data-i18n="chooseFiles">בחירת קבצים</button>
-                        </div>
-                        <canvas id="pageCanvas" class="page-canvas" aria-label="Source page crop selection" hidden></canvas>
-                    </div>
-                    <div class="crop-action" id="cropAction" hidden>
-                        <div><strong data-i18n="cropReady">נבחר אזור לחיתוך</strong><small id="cropDimensions" dir="ltr"></small></div>
-                        <label class="field-inline"><span data-i18n="questionNumber">מספר שאלה</span><input id="newQuestionNumber" maxlength="80" value="15" dir="ltr" placeholder="15 / 1a"></label>
-                        <button class="button primary" id="createCrop" type="button"><span>✂</span> <span data-i18n="saveCrop">צור שאלה מהבחירה</span></button>
-                    </div>
-                    <div class="inventory-panel" id="inventoryPanel" hidden>
-                        <div class="row-between"><label class="field-label" for="inventoryInput" data-i18n="inventoryLabel">מספרי שאלות צפויים בעמוד</label><span class="inventory-help" data-i18n="inventoryFormat">למשל: 15-36 או 1,2,3,7</span></div>
-                        <div class="inventory-row"><input id="inventoryInput" dir="ltr" placeholder="15-36"><button class="button outline small" id="inventorySave" type="button" data-i18n="checkCoverage">בדוק שלמות</button></div>
-                        <div id="inventoryReport" class="inventory-report"></div>
-                    </div>
-                    <div class="hint-row"><span>ⓘ</span><span data-i18n="privacyHint">התמונות נשמרות בשרת הפרטי שלך, ולא מתווספות אוטומטית למאגר GitHub.</span></div>
-                </section>
-            </main>
-
-            <section class="review-column panel" id="reviewPanel">
-                <div class="panel-heading review-heading">
-                    <div><span class="eyebrow" data-i18n="stepTwo">שלבים 2–4 · חילוץ, בדיקה ואישור</span><h2 data-i18n="reviewTitle">בקרת המשוואה</h2></div>
-                    <span class="pill neutral" id="reviewStatus" data-i18n="noSelection">לא נבחרה שאלה</span>
-                </div>
-                <div class="review-empty" id="reviewEmpty"><div class="check-illustration">⌕</div><h3 data-i18n="chooseQuestion">בחרו שאלה מהרשימה</h3><p data-i18n="chooseQuestionDesc">או סמנו אזור בעמוד המקור כדי ליצור שאלה חדשה לבדיקה.</p></div>
-                <div id="reviewContent" hidden>
-                    <div class="source-crop-block"><div class="row-between"><label class="field-label" data-i18n="originalCrop">המקור הסרוק (ללא שינוי)</label><button class="text-button" id="zoomCrop" type="button" data-i18n="zoomSource">הצג בגודל מלא</button><strong id="questionHeading" dir="ltr">#—</strong></div><div class="crop-img-wrap"><img id="cropPreview" alt="Original equation scan"></div></div>
-                    <div class="section-divider"></div>
-                    <div class="row-between"><h3 data-i18n="ocrEngines">מנועי זיהוי עצמאיים</h3><button class="button outline small" id="runOcr" type="button"><span>✧</span> <span data-i18n="recognize">זהה משוואה</span></button></div>
-                    <div class="provider-info" id="providerStatus"></div>
-                    <label class="enhance-option"><input type="checkbox" id="ocrEnhance"><span data-i18n="enhanceOption">שיפור ניגודיות לפני OCR (לא משנה את המקור)</span></label>
-                    <div class="engine-grid">
-                        <div class="engine-card"><div class="row-between"><b>Mathpix</b><button class="text-button" id="useA" type="button" data-i18n="useResult">העתק לעריכה</button></div><textarea id="engineA" dir="ltr" spellcheck="false" placeholder="LaTeX — Mathpix"></textarea></div>
-                        <div class="engine-card"><div class="row-between"><b>Pix2Text</b><button class="text-button" id="useB" type="button" data-i18n="useResult">העתק לעריכה</button></div><textarea id="engineB" dir="ltr" spellcheck="false" placeholder="LaTeX — Pix2Text"></textarea></div>
-                    </div>
-                    <div id="ocrWarnings" class="warning-box" hidden></div>
-                    <div class="section-divider"></div>
-                    <div class="row-between"><h3 data-i18n="finalLatex">תמלול LaTeX מאושר לעריכה</h3><span class="tag" data-i18n="manualRequired">נדרשת השוואה למקור</span></div>
-                    <textarea id="latexEditor" dir="ltr" spellcheck="false" class="latex-editor" placeholder="\frac{5}{x+3}+\frac{8}{x+6}=\frac{80}{(x+3)(x+6)}"></textarea>
-                    <div class="row-between tiny-gap"><label class="field-label" data-i18n="preview">תצוגה מתמטית</label><span id="renderNotice" class="subtle-text"></span></div>
-                    <div id="mathPreview" class="math-preview" dir="ltr"></div>
-                    <div class="edit-actions"><button class="button primary small" id="saveQuestion" type="button" data-i18n="saveEdits">שמור שינויים</button><button class="button outline small" id="analyzeQuestion" type="button" data-i18n="analyze">בדיקה אלגברית</button></div>
-                    <div id="analysisBox" class="analysis-box" hidden></div>
-                    <div class="section-divider"></div>
-                    <div class="review-check-head"><h3 data-i18n="manualReview">רשימת בקרת איכות</h3><span>4 / 4</span></div>
-                    <div class="checks">
-                        <label><input type="checkbox" data-check="source"><span data-i18n="checkSource">השוויתי את המשוואה כולה לתמונה המקורית</span></label>
-                        <label><input type="checkbox" data-check="symbols"><span data-i18n="checkSymbols">בדקתי את כל הספרות, הסימנים והחזקות</span></label>
-                        <label><input type="checkbox" data-check="fractions"><span data-i18n="checkFractions">בדקתי שברים, סוגריים, מונים ומכנים</span></label>
-                        <label><input type="checkbox" data-check="domain"><span data-i18n="checkDomain">בדקתי תחום הצבה וערכים אסורים במידת הצורך</span></label>
-                    </div>
-                    <div class="review-fields">
-                        <label class="stacked-field"><span data-i18n="reviewerName">שם הבודק/ת</span><input id="reviewerInput" placeholder="Initials / Name" maxlength="120"></label>
-                        <label class="stacked-field"><span data-i18n="notes">הערות ובדיקות נוספות</span><textarea id="notesEditor" rows="2" placeholder="לדוגמה: שגיאה בספר המקורי…"></textarea></label>
-                        <label class="source-error-row"><input type="checkbox" id="sourceError"><span data-i18n="sourceError">זוהתה שגיאה אפשרית בספר המקורי</span></label>
-                    </div>
-                    <div class="verify-actions"><button class="button success" id="verifyQuestion" type="button"><span>✓</span> <span data-i18n="confirmVerify">אמת לאחר השוואה לתמונה</span></button><button class="button outline small" id="unverifyQuestion" type="button" data-i18n="reopen">פתח לבדיקה חוזרת</button><button class="button subtle small danger-text" id="deleteQuestion" type="button" data-i18n="deleteQuestion">מחק שאלה</button></div>
-                </div>
-            </section>
-        </div>
-        <footer><span data-i18n="footer">MathAudit · זיהוי אוטומטי אינו תחליף לאימות מול המקור</span><span>v1.0 · Vanilla JS + FastAPI + SymPy</span></footer>
-    </div>
-
-    <dialog id="settingsDialog" class="modal">
-        <form method="dialog" class="modal-card" id="settingsForm">
-            <div class="row-between"><h2 data-i18n="settings">הגדרות</h2><button class="icon-button" type="submit" aria-label="Close">✕</button></div>
-            <label class="stacked-field"><span data-i18n="backendURL">כתובת שרת ה-API (ל-GitHub Pages)</span><input id="apiBaseInput" dir="ltr" placeholder="https://your-api.onrender.com"></label>
-            <label class="stacked-field"><span data-i18n="accessToken">סיסמת גישה לשרת (לא נשמרת ב-GitHub)</span><input id="tokenInput" type="password" autocomplete="off" dir="ltr" placeholder="APP_ACCESS_TOKEN"></label>
-            <p class="modal-note" data-i18n="securityNote">בפריסה ציבורית יש להגדיר APP_ACCESS_TOKEN בשרת. הסיסמה נשמרת רק בזמן פעולת הלשונית.</p>
-            <button type="button" class="button primary full" id="connectBtn" data-i18n="connect">שמור והתחבר</button>
-        </form>
-    </dialog>
-    <dialog id="exportDialog" class="modal">
-        <div class="modal-card">
-            <div class="row-between"><h2 data-i18n="exportTitle">ייצוא תוצאות</h2><button class="icon-button" id="exportClose" aria-label="Close">✕</button></div>
-            <p data-i18n="exportDesc">ברירת המחדל מייצאת רק משוואות שהושלמה עבורן בדיקה חזותית.</p>
-            <label class="source-error-row"><input id="exportAll" type="checkbox"><span data-i18n="includePending">כלול גם שאלות שטרם אומתו (מסומנות ככאלה)</span></label>
-            <div class="export-grid"><button class="button primary" data-export="zip">ZIP + PNG</button><button class="button outline" data-export="json">JSON</button><button class="button outline" data-export="csv">CSV</button><button class="button outline" data-export="tex">LaTeX</button></div>
-        </div>
-    </dialog>
-    <dialog id="imageDialog" class="modal image-dialog">
-        <div class="modal-card image-modal-card">
-            <div class="row-between"><h2 data-i18n="zoomTitle">בחינה מדויקת של תמונת המקור</h2><button class="icon-button" id="imageClose" aria-label="Close">✕</button></div>
-            <div class="image-zoom-tools"><button class="button outline small" id="zoomOut" type="button">−</button><span id="imageZoomLevel">100%</span><button class="button outline small" id="zoomIn" type="button">＋</button></div>
-            <div class="zoom-frame"><img id="largeCrop" alt="Full resolution original crop"></div>
-            <p class="modal-note" data-i18n="zoomHelp">בדקו כל ספרה וסימן. התמונה מוצגת ללא עיבוד OCR.</p>
-        </div>
-    </dialog>
-    <div id="toast" role="status" aria-live="polite"></div>
+    </main>
+    <div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
+    <footer class="footer"><span data-i18n="footer">הסריקות נשמרות במחשב זה בלבד. אל תשכח לייצא גיבוי.</span><span id="storageStatus"></span></footer>
+    <dialog id="settingsDialog"><form method="dialog" class="dialog-content"><div class="dialog-head"><h2 data-i18n="settings">הגדרות</h2><button type="submit" class="ghost" aria-label="Close">×</button></div>
+        <p class="helper" data-i18n="settingsExpl">זיהוי ONNX נעשה במחשב שלך. משיכת מודל ראשונה עשויה להיות גדולה ואיטית. Mathpix מקבל תמונה רק בלחיצה על כפתור Mathpix.</p>
+        <label class="toggle"><input id="gpuInput" type="checkbox"><span data-i18n="webgpu">נסה האצת WebGPU (חזרה אוטומטית ל-WASM)</span></label>
+        <label for="mathpixToken" data-i18n="mathpixToken">Mathpix app_token זמני (לא API key)</label><input id="mathpixToken" type="password" autocomplete="off" spellcheck="false" placeholder="Temporary app_token" dir="ltr">
+        <p class="security" data-i18n="tokenExpl">אין להזין app_key ארוך טווח! ה-token נשמר רק בזיכרון הלשונית. צריך לקבל אותו בבטחה, לדוגמה ממנגנון הנפקת טוקנים מאומת.</p>
+        <button id="persistBtn" type="button" class="ghost" data-i18n="persist">בקש אחסון קבוע בדפדפן</button>
+        <button type="submit" class="primary full" data-i18n="close">סגור</button>
+    </form></dialog>
+    <dialog id="exportDialog"><div class="dialog-content"><div class="dialog-head"><h2 data-i18n="export">ייצוא משוואות</h2><button type="button" class="ghost close-dialog" aria-label="Close">×</button></div>
+        <label class="toggle"><input id="includePending" type="checkbox"><span data-i18n="includePending">כלול גם שאלות שלא אומתו (מסומנות כך)</span></label>
+        <div class="export-buttons"><button type="button" data-export="zip">ZIP + תמונות</button><button type="button" data-export="json">JSON</button><button type="button" data-export="csv">CSV</button><button type="button" data-export="tex">LaTeX</button></div>
+        <hr><button id="restoreBtn" type="button" class="ghost full" data-i18n="restore">שחזר גיבוי ZIP מלא</button><input id="backupInput" type="file" accept=".zip,application/zip" hidden><p class="helper" data-i18n="restoreWarn">שחזור מחליף את כל הנתונים המקומיים לאחר אישור.</p>
+    </div></dialog>
+    <dialog id="zoomDialog"><div class="dialog-content wide"><div class="dialog-head"><h2 data-i18n="original">חיתוך מקורי — ללא שינוי</h2><button type="button" class="ghost close-dialog" aria-label="Close">×</button></div><div class="zoom-surface"><img id="zoomImage" alt="Full-resolution scan crop"></div></div></dialog>
 </body>
 </html>

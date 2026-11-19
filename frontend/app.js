@@ -1,418 +1,426 @@
-(() => {
-    'use strict';
-    const $ = (id) => document.getElementById(id);
-    const state = {
-        pages: [], questions: [], page: null, question: null, image: null,
-        crop: null, dragging: false, origin: null, filter: 'all',
-        api: localStorage.getItem('mathAuditAPI') || window.MATH_AUDIT_API || '',
-        token: sessionStorage.getItem('mathAuditToken') || '',
-        lang: localStorage.getItem('mathAuditLang') || 'he',
-        providers: {}, dirty: false, toastTimer: null, previewTimer: null,
-        pageObjectUrl: null, cropObjectUrl: null, zoomLevel: 1, pageZoom: 1,
+import {
+    uid, SCHEMA, MAX_FILE_BYTES, MAX_PAGES_PER_FILE, CHECKS,
+    normalizeForComparison, disagreement, verifiedRecord, updateTranscript,
+    coverageReport, clampCrop
+} from './core.js';
+import {
+    openDatabase, listPages, listQuestions, savePage, saveQuestion,
+    deletePage, deleteQuestion, replaceAll, requestPersistentStorage, storageEstimate
+} from './storage.js';
+import {recognizeLocal, recognizeMathpix} from './ocr.js';
+import {analyzeLatex} from './math-client.js';
+import {exportZip, exportPlain, loadBackup} from './export.js';
+
+const $ = id => document.getElementById(id);
+const state={pages:[],questions:[],pageId:null,questionId:null,pageURL:null,cropURL:null,zoomURL:null,
+    crop:null,dragStart:null,dragging:false,busy:false,token:'',lang:localStorage.getItem('mathAuditLang')||'he',
+    dirty:false,noticeTimer:null,previewTimer:null};
+const I18N={
+    en:{tagline:'Extract, compare and visually verify equations — without a server',private:'🔒 Stored only in this browser',
+        settings:'Settings',backup:'Full backup',export:'Export equations',import:'＋ Import image or PDF',sample:'Load synthetic demo',
+        sourcePages:'Source pages',questions:'Questions',selectPage:'Select a page to get started',step1:'Step 1 · Select source',
+        sourceScan:'Original scan',deletePage:'Delete page',cropHelp:'Choose a page and drag a box around an entire question, including number, numerators, denominators and powers.',
+        start:'Upload a scan to start',startHelp:'Or open the synthetic demo',questionNumber:'Question #',saveCrop:'Create question from crop',
+        clearCrop:'Clear selection',expected:'Expected exercise numbers',coverage:'Check coverage',step2:'Steps 2–4 · OCR, review and approval',
+        review:'Equation verification',chooseQuestion:'Choose a question to edit and verify',original:'Unmodified original crop',zoom:'View at full resolution',
+        ocr:'Independent OCR engines',ocrHint:'Machine output is not verified',latex:'Editable final LaTeX',save:'Save transcription',
+        checkMath:'Algebraic check',preview:'Rendered mathematical preview',reviewChecklist:'Mandatory human verification',
+        reviewExplain:'Compare the equation visually with its original image. Agreement between OCR engines is not sufficient.',
+        checkSource:'I compared the entire equation with the original',checkSymbols:'I checked every digit, sign and exponent',
+        checkFractions:'I checked brackets, fractions, numerators and denominators',checkDomain:'I checked the domain and excluded values, where applicable',
+        reviewer:'Reviewer name',notes:'Notes',sourceError:'Possible error in the source textbook',verify:'Confirm visual verification',
+        reopen:'Reopen review',deleteQuestion:'Delete question',footer:'Scans stay on this device. Export a full backup regularly.',
+        settingsExpl:'ONNX OCR runs locally on your device. The first model download may be large/slow. A crop is sent externally only when you press Mathpix.',
+        webgpu:'Try WebGPU acceleration (fall back to WASM)',mathpixToken:'Temporary Mathpix app_token (not an API key)',
+        tokenExpl:'Never enter a long-lived app_key! A temporary token is held only in tab memory. Obtain it from a trusted token issuer.',
+        persist:'Request persistent browser storage',close:'Close',includePending:'Include unverified questions (clearly labeled)',
+        restore:'Restore complete ZIP backup',restoreWarn:'Restoring will replace all local data after confirmation.'},
+    he:{}
+};
+function T(key){return I18N[state.lang]?.[key]||key;}
+function notify(text,error=false){
+    const e=$('notice');e.hidden=false;e.textContent=String(text);e.classList.toggle('error',error);
+    clearTimeout(state.noticeTimer);state.noticeTimer=setTimeout(()=>e.hidden=true,6000);
+}
+function fmtDate(s){return s?new Date(s).toLocaleDateString(state.lang==='he'?'he-IL':'en-US'):'';}
+function makeButton(label,css,onClick){const b=document.createElement('button');b.type='button';b.textContent=label;b.className=css||'';b.addEventListener('click',onClick);return b;}
+function textNode(tag,str,css){const e=document.createElement(tag);e.textContent=str;if(css)e.className=css;return e;}
+function existingPage(){return state.pages.find(p=>p.id===state.pageId)||null;}
+function existingQuestion(){return state.questions.find(q=>q.id===state.questionId)||null;}
+function pageQuestions(){return state.questions.filter(q=>q.pageId===state.pageId).sort((a,b)=>(a.createdAt||'').localeCompare(b.createdAt||''));}
+function setBusy(value){
+    state.busy=!!value;
+    for(const id of ['importBtn','fileInput','sampleBtn','cropBtn','texifyBtn','textellerBtn','mathpixBtn','saveBtn','checkMathBtn','verifyBtn','backupBtn']) {
+        const el=$(id);if(el)el.disabled=state.busy||(id==='cropBtn'&&!state.crop)||(id==='cropBtn'&&!existingPage());
+    }
+}
+function localize(){
+    // Preserve the authored Hebrew strings so switching English back to Hebrew works.
+    for(const el of document.querySelectorAll('[data-i18n]')) {
+        const key=el.dataset.i18n;
+        if(!(key in I18N.he)) {
+            const child=[...el.childNodes].find(n=>n.nodeType===Node.TEXT_NODE);
+            if(child) I18N.he[key]=child.textContent.trim();
+        }
+    }
+    document.documentElement.lang=state.lang; document.documentElement.dir=state.lang==='he'?'rtl':'ltr';
+    for(const el of document.querySelectorAll('[data-i18n]')){
+        const val=I18N[state.lang]?.[el.dataset.i18n]; if(!val)continue;
+        const child=[...el.childNodes].find(n=>n.nodeType===Node.TEXT_NODE);
+        if(child)child.textContent=val;
+        else if(!el.children.length)el.textContent=val;
+    }
+    $('langBtn').textContent=state.lang==='he'?'EN':'עב';
+}
+function labelStatus(status){return status==='verified'?(state.lang==='he'?'אומת חזותית':'Verified'):(state.lang==='he'?'לבדיקה':'Needs review');}
+function renderPageList(){
+    const list=$('pageList');list.replaceChildren();$('pageCount').textContent=String(state.pages.length);
+    for(const page of state.pages){
+        const b=makeButton('','entry'+(page.id===state.pageId?' active':''),()=>{if(!state.busy)selectPage(page.id);});
+        b.append(textNode('span',`${page.name} · ${page.pageNo||1}`),textNode('span',String(state.questions.filter(q=>q.pageId===page.id).length),'minor'));
+        list.appendChild(b);
+    }
+    if(!state.pages.length)list.append(textNode('p',state.lang==='he'?'טרם נוספו סריקות':'No scans yet','empty'));
+}
+function renderQuestionList(){
+    const list=$('questionList');list.replaceChildren();const qs=pageQuestions();$('questionCount').textContent=String(qs.length);
+    for(const q of qs){
+        const b=makeButton('','entry'+(q.id===state.questionId?' active':'')+(q.status==='verified'?' verified':''),()=>{if(!state.busy)selectQuestion(q.id);});
+        b.append(textNode('span',`${state.lang==='he'?'שאלה':'Q'} ${q.label||'—'}`),textNode('span',q.status==='verified'?'✓': '○','minor'));
+        list.appendChild(b);
+    }
+    if(!qs.length)list.append(textNode('p',state.lang==='he'?'אין שאלות בעמוד זה':'No questions on this page','empty'));
+}
+function revoke(url){if(url)URL.revokeObjectURL(url);}
+function clearSelection(){
+    state.crop=null;state.dragging=false;$('selection').hidden=true;
+    $('cropBtn').disabled=true;$('resetCropBtn').disabled=true;
+}
+async function selectPage(id){
+    if(state.dirty && !confirm(state.lang==='he'?'יש שינויים שלא נשמרו. להמשיך?':'Discard unsaved changes?'))return;
+    clearSelection();state.pageId=id;state.questionId=null;state.dirty=false;
+    revoke(state.pageURL);state.pageURL=null;
+    const page=existingPage();
+    $('emptyStage').hidden=!!page;$('imageWrap').hidden=!page;
+    $('deletePageBtn').disabled=!page;$('coverageBtn').disabled=!page;
+    $('expectedInput').value=page?.expected||'';$('coverageResult').textContent='';
+    if(page){state.pageURL=URL.createObjectURL(page.blob);$('pageImage').src=state.pageURL;}
+    else $('pageImage').removeAttribute('src');
+    renderPageList();renderQuestionList();renderReview();
+}
+function selectQuestion(id){
+    if(state.busy)return;
+    if(state.dirty && !confirm(state.lang==='he'?'יש שינויים שלא נשמרו. להמשיך?':'Discard unsaved changes?'))return;
+    state.questionId=id;state.dirty=false;renderQuestionList();renderReview();
+}
+function renderReview(){
+    const q=existingQuestion();
+    $('reviewEmpty').hidden=!!q;$('reviewContent').hidden=!q;
+    const badge=$('reviewBadge');badge.textContent=q?labelStatus(q.status):'—';
+    badge.className='status-pill '+(!q?'neutral':q.status==='verified'?'verified':'pending');
+    revoke(state.cropURL);state.cropURL=null;
+    if(!q){$('ocrResults').replaceChildren();return;}
+    state.cropURL=URL.createObjectURL(q.blob);$('cropImage').src=state.cropURL;
+    $('latexInput').value=q.finalLatex||'';$('notesInput').value=q.notes||'';
+    $('reviewerInput').value=q.review?.reviewer||'';$('sourceErrorInput').checked=!!q.sourceError;
+    CHECKS.forEach(key=>$('check'+key.charAt(0).toUpperCase()+key.slice(1)).checked=!!q.review?.checks?.[key]);
+    renderOCR(q);renderAnalysis(q.analysis);preview();
+}
+function renderOCR(q){
+    const el=$('ocrResults');el.replaceChildren();
+    const names={texify2:'Texify2 · ONNX',texteller:'TexTeller · ONNX',mathpix:'Mathpix · API'};
+    for(const engine of ['texify2','texteller','mathpix']){
+        const obj=q.ocr?.[engine];if(!obj?.latex)continue;
+        const block=document.createElement('div');block.className='ocr-result';
+        const head=document.createElement('div');head.className='head';
+        head.append(textNode('strong',names[engine]),makeButton(state.lang==='he'?'העתק לעריכה':'Use transcription','ghost',()=>{
+            $('latexInput').value=obj.latex;state.dirty=true;preview();
+        }));
+        block.append(head,textNode('pre',obj.latex));el.append(block);
+    }
+    const status=$('ocrComparison');status.className='comparison';status.textContent='';
+    const comparison=disagreement(q.ocr||{});
+    if(comparison===true){status.classList.add('alert');status.textContent=state.lang==='he'?'⚠ המנועים אינם מסכימים. נדרש אימות ידני מדויק.':'⚠ OCR engines disagree; carefully review the original.';}
+    if(comparison===false){status.classList.add('good');status.textContent=state.lang==='he'?'התמלולים תואמים, אך עדיין נדרש אימות אנושי.':'OCR outputs agree, but human verification is still required.';}
+}
+function renderAnalysis(data){
+    const el=$('analysisResult');el.textContent='';
+    if(!data)return;
+    const lines=[state.lang==='he'?'ניתוח אלגברי (לא אישור OCR):':'Symbolic analysis (not OCR validation):'];
+    if(!data.supported)lines.push(state.lang==='he'?'סוג הביטוי אינו נתמך אוטומטית.':'Unsupported expression');
+    if(data.solutions?.length)lines.push((state.lang==='he'?'פתרונות אפשריים: ':'Candidate roots: ')+data.solutions.join(', '));
+    if(data.excluded?.length)lines.push((state.lang==='he'?'ערכים אסורים: ':'Excluded roots: ')+data.excluded.join(', '));
+    if(data.domain_conditions?.length)lines.push((state.lang==='he'?'תנאי תחום: ':'Domain conditions: ')+data.domain_conditions.join(', '));
+    lines.push(...(data.notes||[]));el.textContent=lines.join('\n');
+}
+async function preview(){
+    const target=$('mathPreview');const latex=$('latexInput').value.trim();
+    target.textContent=latex?'\\['+latex+'\\]':(state.lang==='he'?'לא הוזן תמלול':'No transcription');
+    if(!latex || !window.MathJax?.typesetPromise)return;
+    try{
+        await window.MathJax.startup.promise;
+        window.MathJax.typesetClear?.([target]);
+        await window.MathJax.typesetPromise([target]);
+    }catch(error){target.textContent=latex;}
+}
+function sourceXY(event){
+    const img=$('pageImage'),r=img.getBoundingClientRect();
+    return {x:Math.min(img.naturalWidth,Math.max(0,(event.clientX-r.left)/r.width*img.naturalWidth)),
+        y:Math.min(img.naturalHeight,Math.max(0,(event.clientY-r.top)/r.height*img.naturalHeight))};
+}
+function drawSelection(){
+    const c=state.crop,sel=$('selection'),img=$('pageImage');
+    if(!c)return;
+    const box=img.getBoundingClientRect(),wrap=$('imageWrap').getBoundingClientRect();
+    sel.style.left=(box.left-wrap.left+c.x0/img.naturalWidth*box.width)+'px';
+    sel.style.top=(box.top-wrap.top+c.y0/img.naturalHeight*box.height)+'px';
+    sel.style.width=((c.x1-c.x0)/img.naturalWidth*box.width)+'px';
+    sel.style.height=((c.y1-c.y0)/img.naturalHeight*box.height)+'px';
+    sel.hidden=false;
+}
+function initDrag(){
+    const wrap=$('imageWrap');
+    wrap.addEventListener('pointerdown',e=>{
+        if(!existingPage()||state.busy||e.button!==0)return;
+        e.preventDefault();wrap.setPointerCapture(e.pointerId);
+        state.dragging=true;state.dragStart=sourceXY(e);state.crop=null;$('selection').hidden=true;
+    });
+    wrap.addEventListener('pointermove',e=>{
+        if(!state.dragging)return;
+        const end=sourceXY(e),p=state.dragStart;
+        state.crop={x0:Math.min(p.x,end.x),y0:Math.min(p.y,end.y),x1:Math.max(p.x,end.x),y1:Math.max(p.y,end.y)};
+        drawSelection();
+    });
+    const end=e=>{
+        if(!state.dragging)return;
+        state.dragging=false;
+        try{
+            const rect=clampCrop(state.crop||{...state.dragStart,x1:state.dragStart.x,y1:state.dragStart.y},$('pageImage').naturalWidth,$('pageImage').naturalHeight);
+            state.crop={x0:rect.x,y0:rect.y,x1:rect.x+rect.width,y1:rect.y+rect.height};
+            drawSelection();$('cropBtn').disabled=false;$('resetCropBtn').disabled=false;
+        }catch{clearSelection();}
     };
-
-    const i18n = {
-        he: {
-            subtitle:'חילוץ משוואות עם אימות אנושי',connecting:'מתחבר…',settings:'הגדרות',upload:'ייבוא סריקות',pages:'עמודים',questions:'שאלות',reviewNeeded:'ממתינות לבדיקה',verified:'אומתו חזותית',export:'ייצוא תוצאות',sourcePages:'עמודי מקור',selectPage:'בחרו עמוד לצפייה ולחיתוך',questionList:'רשימת שאלות',selectQuestion:'בחרו שאלה לעריכה ולאימות',all:'הכול',pending:'לבדיקה',verifiedShort:'אומתו',noPages:'לא הועלו עמודים עדיין',noQuestions:'אין שאלות בעמוד זה',stepOne:'שלב 1 · בחירת המקור',scanArea:'העמוד הסרוק',cropGuide:'גררו מלבן סביב משוואה או שאלה מלאה. שמרו גם את המספר ואת כל המכנים.',clearSelection:'נקה בחירה',deletePage:'מחק עמוד',startTitle:'מתחילים עם סריקה',startBody:'העלו תמונות או PDF של ספר הלימוד. לאחר מכן סמנו בעכבר את המשוואות שתרצו לחלץ.',chooseFiles:'בחירת קבצים',cropReady:'נבחר אזור לחיתוך',questionNumber:'מספר שאלה',saveCrop:'צור שאלה מהבחירה',privacyHint:'התמונות נשמרות בשרת הפרטי שלך, ולא מתווספות אוטומטית למאגר GitHub.',stepTwo:'שלבים 2–4 · חילוץ, בדיקה ואישור',reviewTitle:'בקרת המשוואה',noSelection:'לא נבחרה שאלה',chooseQuestion:'בחרו שאלה מהרשימה',chooseQuestionDesc:'או סמנו אזור בעמוד המקור כדי ליצור שאלה חדשה לבדיקה.',originalCrop:'המקור הסרוק (ללא שינוי)',ocrEngines:'מנועי זיהוי עצמאיים',recognize:'זהה משוואה',useResult:'העתק לעריכה',finalLatex:'תמלול LaTeX מאושר לעריכה',manualRequired:'נדרשת השוואה למקור',preview:'תצוגה מתמטית',saveEdits:'שמור שינויים',analyze:'בדיקה אלגברית',manualReview:'רשימת בקרת איכות',checkSource:'השוויתי את המשוואה כולה לתמונה המקורית',checkSymbols:'בדקתי את כל הספרות, הסימנים והחזקות',checkFractions:'בדקתי שברים, סוגריים, מונים ומכנים',checkDomain:'בדקתי תחום הצבה וערכים אסורים במידת הצורך',reviewerName:'שם הבודק/ת',notes:'הערות ובדיקות נוספות',sourceError:'זוהתה שגיאה אפשרית בספר המקורי',confirmVerify:'אמת לאחר השוואה לתמונה',reopen:'פתח לבדיקה חוזרת',deleteQuestion:'מחק שאלה',footer:'MathAudit · זיהוי אוטומטי אינו תחליף לאימות מול המקור',backendURL:'כתובת שרת ה-API (ל-GitHub Pages)',accessToken:'סיסמת גישה לשרת (לא נשמרת ב-GitHub)',securityNote:'בפריסה ציבורית יש להגדיר APP_ACCESS_TOKEN בשרת. הסיסמה נשמרת רק בזמן פעולת הלשונית.',connect:'שמור והתחבר',exportTitle:'ייצוא תוצאות',exportDesc:'ברירת המחדל מייצאת רק משוואות שהושלמה עבורן בדיקה חזותית.',includePending:'כלול גם שאלות שטרם אומתו (מסומנות ככאלה)',connected:'מחובר',disconnected:'אין חיבור',needsReview:'לבדיקה',verifiedStatus:'אומת חזותית',noMathpix:'Mathpix לא מוגדר',noPix:'Pix2Text לא מותקן',ready:'מוכן',uploading:'מעלה קבצים…',saved:'השינויים נשמרו',created:'השאלה נוצרה',checkAll:'יש לסמן את כל בדיקות האיכות',reviewNameRequired:'יש להזין שם בודק/ת',verifySuccess:'המשוואה סומנה כמאומתת חזותית',ocrDone:'הזיהוי הושלם. חובה להשוות למקור.',analyzeReady:'בדיקה אלגברית הסתיימה (לא מחליפה בדיקת מקור)',failed:'הפעולה נכשלה',confirmDelete:'למחוק לצמיתות?',unsaved:'קיימים שינויים שלא נשמרו. לעבור בכל זאת?',enginesDisagree:'שני המנועים אינם מסכימים — נדרש אימות ידני',analysisUnsupported:'לא ניתן לנתח אוטומטית את התבנית הזו',solutions:'פתרונות אפשריים',excluded:'ערכים אסורים',conditions:'תנאי תחום',notesAnalysis:'הערות',analysisDisclaimer:'ניתוח אלגברי בלבד, אינו מוכיח שהסריקה תומללה נכון',noProviders:'אין מנוע OCR מוגדר; אפשר להדביק LaTeX ידנית.',alreadyVerified:'השאלה מאומתת — שינוי התמלול יפתח אותה לבדיקה חוזרת.',unexpected:'הזינו כתובת שרת API תקינה בהגדרות.',batchOCR:'זיהוי כל השאלות החדשות',zoomSource:'הצג בגודל מלא',zoomTitle:'בחינה מדויקת של תמונת המקור',zoomHelp:'בדקו כל ספרה וסימן. התמונה מוצגת ללא עיבוד OCR.',batchDone:'בוצע זיהוי אוטומטי לשאלות החדשות; כל תוצאה מחייבת בדיקה ידנית.',noBatch:'אין שאלות חדשות שממתינות לזיהוי.',inventoryLabel:'מספרי שאלות צפויים בעמוד',inventoryFormat:'למשל: 15-36 או 1,2,3,7',checkCoverage:'בדוק שלמות',coverageReady:'כל המספרים הצפויים נמצאים; נדרש עדיין לאמת את התוכן.',coverageNotSet:'הזינו טווח מספרים כדי לבדוק שלא חסרות שאלות.',missingNums:'חסרים',duplicateNums:'כפולים',extraNums:'לא ברשימה',coverageSaved:'רשימת המספרים נשמרה',enhanceOption:'שיפור ניגודיות לפני OCR (לא משנה את המקור)'
-        },
-        en: {
-            subtitle:'Equation extraction with human verification',connecting:'Connecting…',settings:'Settings',upload:'Import scans',pages:'Pages',questions:'Questions',reviewNeeded:'Needs review',verified:'Visually verified',export:'Export results',sourcePages:'Source pages',selectPage:'Select a page to inspect and crop',questionList:'Questions',selectQuestion:'Choose a question to review',all:'All',pending:'To review',verifiedShort:'Verified',noPages:'No pages uploaded yet',noQuestions:'No questions on this page',stepOne:'Step 1 · Select source',scanArea:'Scanned page',cropGuide:'Drag a box around a complete equation or question, including all denominators and the question number.',clearSelection:'Clear selection',deletePage:'Delete page',startTitle:'Start with a scan',startBody:'Upload images or a textbook PDF, then drag to select the equations to extract.',chooseFiles:'Choose files',cropReady:'Region selected',questionNumber:'Question #',saveCrop:'Create question from crop',privacyHint:'Source scans remain on your server and are not automatically uploaded to GitHub.',stepTwo:'Steps 2–4 · OCR, review, approve',reviewTitle:'Equation verification',noSelection:'No selection',chooseQuestion:'Select a question',chooseQuestionDesc:'Or select a region on the scanned page to add a question.',originalCrop:'Original scan (unchanged)',ocrEngines:'Independent OCR engines',recognize:'Run OCR',useResult:'Use result',finalLatex:'Editable final LaTeX',manualRequired:'Original-image comparison required',preview:'Rendered math preview',saveEdits:'Save edits',analyze:'Algebraic check',manualReview:'Quality checklist',checkSource:'I compared the entire equation with the source image',checkSymbols:'I checked every digit, sign and exponent',checkFractions:'I checked fractions, brackets, numerators and denominators',checkDomain:'I checked valid domain and excluded values where needed',reviewerName:'Reviewer name',notes:'Notes and follow-up findings',sourceError:'Possible error in the original textbook',confirmVerify:'Confirm visual verification',reopen:'Reopen review',deleteQuestion:'Delete question',footer:'MathAudit · Automated OCR never replaces human image verification',backendURL:'API backend URL (for GitHub Pages)',accessToken:'Backend access token (not saved on GitHub)',securityNote:'For public deployments, set APP_ACCESS_TOKEN on the server. The token is held only during this browser tab session.',connect:'Save and connect',exportTitle:'Export results',exportDesc:'By default, export only questions that passed explicit visual review.',includePending:'Include questions that are still unverified (clearly labeled)',connected:'Connected',disconnected:'Disconnected',needsReview:'Needs review',verifiedStatus:'Visually verified',noMathpix:'Mathpix not configured',noPix:'Pix2Text not installed',ready:'Ready',uploading:'Uploading…',saved:'Changes saved',created:'Question created',checkAll:'Complete every review checkbox',reviewNameRequired:'Enter the reviewer name',verifySuccess:'Equation marked visually verified',ocrDone:'OCR completed. Source-image comparison is still required.',analyzeReady:'Algebraic check completed (not transcription proof)',failed:'Operation failed',confirmDelete:'Delete permanently?',unsaved:'Unsaved edits. Continue without saving?',enginesDisagree:'OCR engines disagree — manual verification required',analysisUnsupported:'Automatic analysis cannot handle this notation',solutions:'Possible solutions',excluded:'Excluded values',conditions:'Domain conditions',notesAnalysis:'Notes',analysisDisclaimer:'Algebraic analysis only; does not prove OCR matches the scan',noProviders:'No OCR engines configured; you can paste LaTeX manually.',alreadyVerified:'Changing a verified equation will reopen its review.',unexpected:'Set a valid API backend URL under Settings.',batchOCR:'OCR all new questions',zoomSource:'View at full resolution',zoomTitle:'Inspect the original image at full resolution',zoomHelp:'Inspect every digit and sign. This is the original crop, without OCR enhancements.',batchDone:'OCR finished for new questions; every output requires manual review.',noBatch:'No new blank questions are awaiting OCR.',inventoryLabel:'Expected exercise numbers on this page',inventoryFormat:'e.g. 15-36 or 1,2,3,7',checkCoverage:'Check coverage',coverageReady:'Every expected number is present; mathematical content still requires review.',coverageNotSet:'Enter an expected range to detect missing questions.',missingNums:'Missing',duplicateNums:'Duplicates',extraNums:'Not expected',coverageSaved:'Exercise inventory saved',enhanceOption:'Enhance contrast for OCR (source remains unchanged)'
+    wrap.addEventListener('pointerup',end);wrap.addEventListener('pointercancel',()=>clearSelection());
+    window.addEventListener('resize',drawSelection);
+}
+async function cropSelected(){
+    const p=existingPage();if(!p||!state.crop)throw new Error('Select a crop on the scanned page');
+    const label=$('labelInput').value.trim();if(!label)throw new Error('Enter the printed question number');
+    const img=await createImageBitmap(p.blob);
+    try{
+        const area=clampCrop(state.crop,img.width,img.height);
+        const canvas=document.createElement('canvas');canvas.width=area.width;canvas.height=area.height;
+        canvas.getContext('2d',{willReadFrequently:true}).drawImage(img,area.x,area.y,area.width,area.height,0,0,area.width,area.height);
+        const blob=await new Promise((res,rej)=>canvas.toBlob(v=>v?res(v):rej(new Error('Could not crop image')),'image/png'));
+        const now=new Date().toISOString();
+        const q={id:uid(),pageId:p.id,label,box:area,blob,ocr:{},finalLatex:'',status:'needs_review',review:null,
+            analysis:null,sourceError:false,notes:'',createdAt:now,updatedAt:now};
+        await saveQuestion(q);state.questions.push(q);clearSelection();$('labelInput').value='';
+        selectQuestion(q.id);notify(state.lang==='he'?'השאלה נוצרה ונשמרה בדפדפן':'Question saved locally');
+    }finally{img.close?.();}
+}
+async function pdfToPages(file){
+    const pdfjs=await import('https://cdn.jsdelivr.net/npm/pdfjs-dist@6.5.438/build/pdf.mjs');
+    pdfjs.GlobalWorkerOptions.workerSrc='https://cdn.jsdelivr.net/npm/pdfjs-dist@6.5.438/build/pdf.worker.mjs';
+    const pdf=await pdfjs.getDocument({data:new Uint8Array(await file.arrayBuffer())}).promise;
+    if(pdf.numPages>MAX_PAGES_PER_FILE)throw new Error(`PDF contains ${pdf.numPages} pages; maximum is ${MAX_PAGES_PER_FILE} per file`);
+    const results=[];
+    for(let n=1;n<=pdf.numPages;n++){
+        notify(`PDF: ${n}/${pdf.numPages}`);
+        const page=await pdf.getPage(n);
+        const native=page.getViewport({scale:1});
+        const scale=Math.min(2.5,3000/Math.max(native.width,native.height));
+        const view=page.getViewport({scale});
+        const canvas=document.createElement('canvas');canvas.width=Math.floor(view.width);canvas.height=Math.floor(view.height);
+        await page.render({canvasContext:canvas.getContext('2d'),viewport:view}).promise;
+        const blob=await new Promise((res,rej)=>canvas.toBlob(v=>v?res(v):rej(new Error('PDF render failed')),'image/png'));
+        results.push({name:file.name,pageNo:n,blob});page.cleanup();
+    }
+    await pdf.destroy();return results;
+}
+async function importFiles(files){
+    if(!files.length)return;
+    setBusy(true);let imported=0;
+    try{
+        for(const file of files){
+            if(file.size>MAX_FILE_BYTES)throw new Error(`File exceeds 35 MB: ${file.name}`);
+            let records=[];
+            if(file.type==='application/pdf'||/\.pdf$/i.test(file.name))records=await pdfToPages(file);
+            else if(['image/png','image/jpeg','image/webp'].includes(file.type))records=[{name:file.name,pageNo:1,blob:file}];
+            else throw new Error(`Unsupported file type: ${file.name}`);
+            for(const rec of records){
+                const page={id:uid(),...rec,expected:'',createdAt:new Date().toISOString()};
+                await savePage(page);state.pages.push(page);imported++;
+                if(!state.pageId)state.pageId=page.id;
+            }
         }
+        setBusy(false);await selectPage(state.pageId);notify(`${imported} ${state.lang==='he'?'עמודים נשמרו בדפדפן':'pages saved in browser'}`);
+        updateStorage();
+    }finally{setBusy(false);$('fileInput').value='';}
+}
+function getCurrentReview(){
+    const checks=Object.fromEntries(CHECKS.map(k=>[k,$('check'+k.charAt(0).toUpperCase()+k.slice(1)).checked]));
+    return {checks,reviewer:$('reviewerInput').value.trim(),notes:$('notesInput').value,sourceError:$('sourceErrorInput').checked};
+}
+async function saveTranscript(){
+    let q=existingQuestion();if(!q)throw new Error('Select a question');
+    q=updateTranscript(q,$('latexInput').value);
+    q.notes=$('notesInput').value;q.sourceError=$('sourceErrorInput').checked;
+    await saveQuestion(q);replaceQuestion(q);state.dirty=false;
+    notify(state.lang==='he'?'התמלול נשמר בדפדפן':'Transcription saved locally');
+}
+function replaceQuestion(q){
+    const i=state.questions.findIndex(other=>other.id===q.id);
+    if(i>=0)state.questions[i]=q;
+    renderQuestionList();renderReview();
+}
+async function recognize(engine){
+    const original=existingQuestion();if(!original)throw new Error('Select a question');
+    setBusy(true);
+    try{
+        let result;
+        if(engine==='mathpix'){
+            if(!state.token) { $('settingsDialog').showModal();throw new Error('Add a temporary Mathpix app_token in Settings'); }
+            notify(state.lang==='he'?'שולח חיתוך ל-Mathpix...':'Sending crop to Mathpix...');
+            result=await recognizeMathpix(original.blob,state.token);
+        }else{
+            notify(state.lang==='he'?'טוען מודל ONNX. ההורדה הראשונית עשויה להיות גדולה...':'Loading ONNX model (first download can be large)...');
+            result=await recognizeLocal(engine,original.blob,p=>{
+                if(p?.status==='progress'&&Number.isFinite(p.progress))notify(`${engine}: ${Math.round(p.progress)}%`);
+                else if(p?.status==='info')notify(p.message);
+            });
+        }
+        const fresh=existingQuestion();if(!fresh||fresh.id!==original.id)return;
+        const q={...fresh,ocr:{...(fresh.ocr||{}),[engine]:result},updatedAt:new Date().toISOString(),status:'needs_review',review:null};
+        await saveQuestion(q);replaceQuestion(q);
+        notify(`${engine}: ${state.lang==='he'?'הזיהוי הסתיים. נדרשת השוואה למקור.':'OCR finished; compare with original.'}`);
+    }finally{setBusy(false);}
+}
+async function mathCheck(){
+    const q=existingQuestion();if(!q)return;
+    const latex=$('latexInput').value.trim();if(!latex)throw new Error('Enter LaTeX first');
+    setBusy(true);notify(state.lang==='he'?'טוען Pyodide ו-SymPy בדפדפן...':'Loading Pyodide and SymPy locally...');
+    try{
+        const analysis=await analyzeLatex(latex);
+        let updated=updateTranscript(q,latex);updated.analysis=analysis;
+        await saveQuestion(updated);replaceQuestion(updated);state.dirty=false;
+        notify(state.lang==='he'?'ניתוח אלגברי הושלם; אינו מאשר OCR':'Algebraic analysis completed; OCR still unverified');
+    }finally{setBusy(false);}
+}
+async function verify(){
+    let q=existingQuestion();if(!q)return;
+    const latex=$('latexInput').value.trim();if(!latex)throw new Error('Enter the verified LaTeX');
+    const r=getCurrentReview();
+    q=updateTranscript(q,latex);
+    q=verifiedRecord(q,r.reviewer,r.checks,r.notes,r.sourceError);
+    await saveQuestion(q);replaceQuestion(q);state.dirty=false;
+    notify(state.lang==='he'?'המשוואה סומנה כמאומתת חזותית':'Equation marked visually verified');
+}
+async function reopen(){
+    let q=existingQuestion();if(!q)return;
+    q={...q,status:'needs_review',review:null,updatedAt:new Date().toISOString()};
+    await saveQuestion(q);replaceQuestion(q);state.dirty=false;
+}
+async function saveExpectedAndCoverage(){
+    const p=existingPage();if(!p)return;
+    p.expected=$('expectedInput').value.trim();
+    const report=coverageReport(p.expected,pageQuestions());
+    await savePage(p);
+    $('coverageResult').textContent=[
+        `${state.lang==='he'?'צפויות':'Expected'}: ${report.expected.length}`,
+        `${state.lang==='he'?'חסרות':'Missing'}: ${report.missing.join(', ')||'—'}`,
+        `${state.lang==='he'?'כפולות':'Duplicates'}: ${report.duplicate.join(', ')||'—'}`,
+        `${state.lang==='he'?'לא צפויות':'Unexpected'}: ${report.unexpected.join(', ')||'—'}`,
+    ].join('\n');
+}
+async function updateStorage(){
+    const s=await storageEstimate().catch(()=>null);
+    if(!s)return;
+    const mb=n=>(n/1024/1024).toFixed(1)+' MB';
+    $('storageStatus').textContent=`${mb(s.used)} ${state.lang==='he'?'בשימוש':'used'} / ${mb(s.quota)} · ${s.persisted?'✓':''}`;
+}
+async function loadDemo(){
+    const response=await fetch('./demo_practice_page.png');
+    if(!response.ok)throw new Error('Demo image missing');
+    await importFiles([new File([await response.blob()],'demo_practice_page.png',{type:'image/png'})]);
+}
+function registerEvents(){
+    $('importBtn').onclick=()=>$('fileInput').click();
+    $('fileInput').onchange=()=>guard(()=>importFiles([...$('fileInput').files]));
+    $('sampleBtn').onclick=()=>guard(loadDemo);
+    $('cropBtn').onclick=()=>guard(cropSelected);
+    $('resetCropBtn').onclick=clearSelection;
+    $('coverageBtn').onclick=()=>guard(saveExpectedAndCoverage);
+    $('deletePageBtn').onclick=()=>guard(async()=>{
+        if(!confirm(state.lang==='he'?'למחוק עמוד וכל שאלותיו?':'Delete page and all its questions?'))return;
+        const id=state.pageId;await deletePage(id);
+        state.pages=state.pages.filter(p=>p.id!==id);state.questions=state.questions.filter(q=>q.pageId!==id);state.dirty=false;
+        await selectPage(state.pages[0]?.id||null);updateStorage();
+    });
+    $('deleteQuestionBtn').onclick=()=>guard(async()=>{
+        if(!confirm(state.lang==='he'?'למחוק את השאלה?':'Delete this question?'))return;
+        const id=state.questionId;await deleteQuestion(id);
+        state.questions=state.questions.filter(q=>q.id!==id);state.questionId=null;
+        renderQuestionList();renderReview();updateStorage();
+    });
+    $('texifyBtn').onclick=()=>guard(()=>recognize('texify2'));
+    $('textellerBtn').onclick=()=>guard(()=>recognize('texteller'));
+    $('mathpixBtn').onclick=()=>guard(()=>recognize('mathpix'));
+    $('latexInput').addEventListener('input',()=>{state.dirty=true;clearTimeout(state.previewTimer);state.previewTimer=setTimeout(preview,350);});
+    $('saveBtn').onclick=()=>guard(saveTranscript);
+    $('checkMathBtn').onclick=()=>guard(mathCheck);
+    $('verifyBtn').onclick=()=>guard(verify);
+    $('reopenBtn').onclick=()=>guard(reopen);
+    $('settingsBtn').onclick=()=>$('settingsDialog').showModal();
+    $('mathpixToken').addEventListener('input',e=>{state.token=e.target.value.trim();});
+    $('gpuInput').checked=localStorage.getItem('mathAuditWebGPU')==='true';
+    $('gpuInput').addEventListener('change',e=>localStorage.setItem('mathAuditWebGPU',String(e.target.checked)));
+    $('persistBtn').onclick=()=>guard(async()=>notify(await requestPersistentStorage()?'Persistent storage granted':'Persistence request declined or unavailable'));
+    $('langBtn').onclick=()=>{
+        state.lang=state.lang==='he'?'en':'he';localStorage.setItem('mathAuditLang',state.lang);
+        localize();renderPageList();renderQuestionList();renderReview();updateStorage();
     };
-    const t = (key) => i18n[state.lang][key] || key;
-
-    function localize() {
-        document.documentElement.lang = state.lang;
-        document.documentElement.dir = state.lang === 'he' ? 'rtl' : 'ltr';
-        document.querySelectorAll('[data-i18n]').forEach(el => el.textContent = t(el.dataset.i18n));
-        $('langBtn').textContent = state.lang === 'he' ? 'EN' : 'עב';
-        renderPages(); renderQuestions(); renderReviewStatus(); renderProviders();
-    }
-
-    function toast(message, error=false) {
-        const el = $('toast');
-        el.textContent = message; el.classList.toggle('error', error); el.classList.add('show');
-        clearTimeout(state.toastTimer);
-        state.toastTimer = setTimeout(() => el.classList.remove('show'), 4400);
-    }
-    function base() { return String(state.api).trim().replace(/\/+$/, ''); }
-    async function request(path, {method='GET', body, isForm=false} = {}) {
-        const options = {method, headers:{'X-Access-Token': state.token}, cache:'no-store'};
-        if (body !== undefined) {
-            if (isForm) options.body = body;
-            else { options.headers['Content-Type'] = 'application/json'; options.body = JSON.stringify(body); }
-        }
-        let response;
-        try { response = await fetch(base() + path, options); }
-        catch (err) { throw new Error(t('unexpected') + ' (' + err.message + ')'); }
-        if (!response.ok) {
-            let detail = response.statusText;
-            try { const o = await response.json(); detail = typeof o.detail === 'string' ? o.detail : JSON.stringify(o.detail); } catch {}
-            if (response.status === 401) $('settingsDialog').showModal();
-            throw new Error(detail || `HTTP ${response.status}`);
-        }
-        return response;
-    }
-    async function json(path, opts) { return (await request(path, opts)).json(); }
-    async function blobUrl(path) { return URL.createObjectURL(await (await request(path)).blob()); }
-    async function download(format) {
-        const all = $('exportAll').checked;
-        const response = await request(`/api/export?format=${encodeURIComponent(format)}&verified_only=${!all}`);
-        const url = URL.createObjectURL(await response.blob());
-        const a = document.createElement('a'); a.href=url; a.download=`mathaudit-${all?'all':'verified'}.${format}`;
-        document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),5000);
-    }
-    function setConnection(ok) {
-        const el=$('connection');el.className='connection-status '+(ok?'connected':'error');
-        el.querySelector('span:last-child').textContent = t(ok?'connected':'disconnected');
-    }
-    async function refresh({preserve=true}={}) {
-        try {
-            const [status, pages, questions] = await Promise.all([json('/api/status'),json('/api/pages'),json('/api/questions')]);
-            state.providers = status.providers;state.pages = pages;state.questions = questions;
-            $('pagesCount').textContent = status.pages;
-            $('questionsCount').textContent = status.questions;
-            $('pendingCount').textContent = status.questions - (status.by_status.verified || 0);
-            $('verifiedCount').textContent = status.by_status.verified || 0;
-            setConnection(true);
-            if (preserve && state.page && pages.some(p=>p.id===state.page.id)) {
-                state.page=pages.find(p=>p.id===state.page.id);
-            } else if (!state.page && pages.length) {
-                state.page=pages[0];
-            } else if (state.page && !pages.some(p=>p.id===state.page.id)) {
-                state.page=pages[0]||null;state.question=null;
-            }
-            if (state.question) state.question=questions.find(q=>q.id===state.question.id)||null;
-            renderPages();renderQuestions();renderProviders();renderReviewStatus();
-            $('deletePage').disabled = !state.page;
-            $('inventoryPanel').hidden=!state.page;
-            if(state.page){$('inventoryInput').value=state.page.expected_numbers||'';await loadCoverage();}else $('inventoryReport').textContent='';
-            $('batchOCR').disabled = !state.page;
-            if (state.page && (!state.image || state.image.pageId !== state.page.id)) await loadPageImage(state.page);
-            else if (!state.page) resetPageImage();
-            await renderReview();
-        } catch (err) {setConnection(false);toast(err.message,true);}
-    }
-    function renderPages() {
-        const holder=$('pageList');holder.replaceChildren();
-        if (!state.pages.length) {const div=document.createElement('div');div.className='empty-side';div.textContent=t('noPages');holder.append(div);return;}
-        for (const p of state.pages) {
-            const btn=document.createElement('button');btn.className='page-item '+(state.page?.id===p.id?'active':'');
-            const icon=document.createElement('span');icon.className='page-thumb';icon.style.display='grid';icon.style.placeItems='center';icon.textContent='▤';icon.style.fontSize='20px';
-            const text=document.createElement('span');
-            const name=document.createElement('span');name.className='page-item-label';name.textContent=p.label;
-            const dims=document.createElement('span');dims.className='page-item-sub';dims.textContent=`${p.width} × ${p.height}`;
-            text.append(name,dims);btn.append(icon,text);
-            btn.addEventListener('click',()=>selectPage(p.id));holder.append(btn);
-        }
-    }
-    function renderQuestions() {
-        const holder=$('questionList');holder.replaceChildren();
-        const all=state.questions.filter(q=>q.page_id===state.page?.id);
-        $('listSub').textContent=`${all.length} ${t('questions')}`;
-        const qs=all.filter(q=>state.filter==='all'||q.status===state.filter);
-        if (!qs.length){const div=document.createElement('div');div.className='empty-side';div.textContent=t('noQuestions');holder.append(div);return;}
-        for (const q of qs) {
-            const btn=document.createElement('button');btn.className='question-item '+(state.question?.id===q.id?'active':'');
-            const label=document.createElement('span');label.textContent='# '+q.number;
-            const status=document.createElement('small');status.className=q.status==='verified'?'good':'';
-            status.textContent=q.status==='verified'?'✓ '+t('verifiedShort'):'◷ '+t('pending');
-            btn.append(label,status);btn.addEventListener('click',()=>selectQuestion(q.id));holder.append(btn);
-        }
-    }
-    async function selectPage(id) {
-        if (state.page?.id===id)return;
-        if (state.dirty && !confirm(t('unsaved')))return;
-        state.page=state.pages.find(p=>p.id===id)||null;state.question=null;state.crop=null;state.dirty=false;state.pageZoom=1;
-        $('cropAction').hidden=true;
-        renderPages();renderQuestions();await loadPageImage(state.page);await renderReview();
-    }
-    async function loadPageImage(page) {
-        resetPageImage(false);
-        if (!page)return;
-        $('scanTitle').textContent=page.label;
-        $('scanEmpty').hidden=true;
-        $('pageCanvas').hidden=false;
-        try {
-            const url=await blobUrl(`/api/pages/${page.id}/image`);
-            state.pageObjectUrl=url;
-            const im=new Image();
-            await new Promise((resolve,reject)=>{im.onload=resolve;im.onerror=reject;im.src=url;});
-            state.image={image:im,pageId:page.id};
-            fitCanvas();
-        } catch(err) {toast(err.message,true);resetPageImage();}
-    }
-    function resetPageImage(revealEmpty=true) {
-        if(state.pageObjectUrl){URL.revokeObjectURL(state.pageObjectUrl);state.pageObjectUrl=null;}
-        state.image=null;state.crop=null;$('pageCanvas').hidden=true;$('cropAction').hidden=true;
-        $('scanEmpty').hidden=!revealEmpty;
-    }
-    function fitCanvas() {
-        if(!state.image)return;
-        const {image}=state.image,canvas=$('pageCanvas'),stage=$('scanStage');
-        canvas.width=image.naturalWidth;canvas.height=image.naturalHeight;
-        const scale=Math.min((stage.clientWidth-30)/image.naturalWidth, 690/image.naturalHeight, 1.8)*state.pageZoom;
-        canvas.style.width=Math.round(image.naturalWidth*scale)+'px';
-        canvas.style.height=Math.round(image.naturalHeight*scale)+'px';
-        drawCanvas();
-    }
-    function drawCanvas() {
-        if(!state.image)return;
-        const canvas=$('pageCanvas'),ctx=canvas.getContext('2d');
-        ctx.clearRect(0,0,canvas.width,canvas.height);
-        ctx.drawImage(state.image.image,0,0,canvas.width,canvas.height);
-        if (state.crop) {
-            const [x0,y0,x1,y1]=[Math.min(state.crop[0],state.crop[2]),Math.min(state.crop[1],state.crop[3]),Math.max(state.crop[0],state.crop[2]),Math.max(state.crop[1],state.crop[3])];
-            ctx.fillStyle='rgba(33,139,113,0.13)';ctx.fillRect(x0,y0,x1-x0,y1-y0);
-            ctx.strokeStyle='#218b71';ctx.lineWidth=Math.max(2,canvas.width/550);ctx.setLineDash([12,7]);ctx.strokeRect(x0,y0,x1-x0,y1-y0);ctx.setLineDash([]);
-        }
-    }
-    function canvasPoint(event) {
-        const rect=$('pageCanvas').getBoundingClientRect();
-        return [Math.max(0,Math.min($('pageCanvas').width, (event.clientX-rect.left)*$('pageCanvas').width/rect.width)),
-                Math.max(0,Math.min($('pageCanvas').height,(event.clientY-rect.top)*$('pageCanvas').height/rect.height))];
-    }
-    function updateCropUI() {
-        const crop=state.crop;if(!crop)return;
-        const w=Math.abs(crop[2]-crop[0]),h=Math.abs(crop[3]-crop[1]);
-        $('cropAction').hidden= w<15||h<15;
-        $('cropDimensions').textContent=`${Math.round(w)} × ${Math.round(h)} px`;
-    }
-    async function loadCoverage() {
-        if(!state.page)return;
-        try {
-            const c=await json(`/api/pages/${state.page.id}/coverage`);
-            const out=$('inventoryReport');
-            out.className='inventory-report '+(c.ready?'good':c.expected_count?'warn':'');
-            if(!c.expected_count){out.textContent=t('coverageNotSet');return;}
-            const parts=[`${c.cropped_count} / ${c.expected_count}`];
-            if(c.missing.length)parts.push(`${t('missingNums')}: ${c.missing.join(', ')}`);
-            if(c.duplicates.length)parts.push(`${t('duplicateNums')}: ${c.duplicates.join(', ')}`);
-            if(c.extra.length)parts.push(`${t('extraNums')}: ${c.extra.join(', ')}`);
-            if(c.ready)parts.push(t('coverageReady'));
-            out.textContent=parts.join(' · ');
-        } catch(err) { $('inventoryReport').textContent=err.message; }
-    }
-    async function selectQuestion(id) {
-        if (state.question?.id===id)return;
-        if (state.dirty && !confirm(t('unsaved')))return;
-        state.question=state.questions.find(q=>q.id===id)||null;
-        state.dirty=false;renderQuestions();await renderReview();
-    }
-    function renderReviewStatus() {
-        const status=$('reviewStatus'),q=state.question;
-        status.className='pill '+(q?.status==='verified'?'good':q?'warn':'neutral');
-        status.textContent=!q?t('noSelection'):q.status==='verified'?t('verifiedStatus'):t('needsReview');
-    }
-    function renderProviders() {
-        const el=$('providerStatus');el.replaceChildren();
-        for (const [key,label] of [['mathpix','Mathpix'],['pix2text','Pix2Text']]) {
-            const flag=document.createElement('span');flag.className=state.providers[key]?'available':'';
-            flag.textContent=label+': '+(state.providers[key]?t('ready'):t(key==='mathpix'?'noMathpix':'noPix'));
-            el.append(flag);
-        }
-    }
-    function showWarnings(q) {
-        const warnings=[...(q?.ocr_warnings||[])];
-        if(q?.engine_a && q?.engine_b && compact(q.engine_a)!==compact(q.engine_b))warnings.push(t('enginesDisagree'));
-        $('ocrWarnings').hidden=!warnings.length;
-        $('ocrWarnings').textContent=warnings.join('\n');
-    }
-    function compact(s){return(s||'').replace(/\s+/g,'').replaceAll('\\left','').replaceAll('\\right','').replaceAll('\\dfrac','\\frac');}
-    async function renderReview() {
-        const q=state.question;
-        $('reviewEmpty').hidden=!!q;$('reviewContent').hidden=!q;renderReviewStatus();
-        if(!q)return;
-        $('questionHeading').textContent='# '+q.number;
-        $('engineA').value=q.engine_a;$('engineB').value=q.engine_b;
-        $('latexEditor').value=q.latex;$('notesEditor').value=q.notes;
-        $('sourceError').checked=q.source_error;
-        $('reviewerInput').value=q.reviewer||localStorage.getItem('mathAuditReviewer')||'';
-        document.querySelectorAll('[data-check]').forEach(el=>el.checked=!!q.checks[el.dataset.check]);
-        $('unverifyQuestion').disabled=q.status!=='verified';
-        if(state.cropObjectUrl)URL.revokeObjectURL(state.cropObjectUrl);
-        try {state.cropObjectUrl=await blobUrl(`/api/questions/${q.id}/image`);$('cropPreview').src=state.cropObjectUrl;}
-        catch(err){toast(err.message,true);}
-        showWarnings(q);renderAnalysis(q.analysis);schedulePreview();state.dirty=false;
-    }
-    function schedulePreview() {
-        clearTimeout(state.previewTimer);state.previewTimer=setTimeout(renderMath,180);
-    }
-    async function renderMath() {
-        const latex=$('latexEditor').value.trim(),el=$('mathPreview');
-        el.replaceChildren();if(!latex)return;
-        el.textContent='\\['+latex.replace(/^\$+|\$+$/g,'')+'\\]';
-        if(!window.MathJax?.typesetPromise){$('renderNotice').textContent='MathJax CDN unavailable — LaTeX shown as text';return;}
-        $('renderNotice').textContent='';
-        try {await window.MathJax.typesetPromise([el]);}
-        catch(err) {$('renderNotice').textContent='LaTeX render warning';}
-    }
-    function renderAnalysis(analysis) {
-        const el=$('analysisBox');el.replaceChildren();
-        if(!analysis || !Object.keys(analysis).length){el.hidden=true;return;}
-        el.hidden=false;
-        const add=(heading,parts)=>{
-            const p=document.createElement('p'),b=document.createElement('b');b.textContent=heading+': ';
-            p.append(b,document.createTextNode(Array.isArray(parts)?(parts.join(' · ')||'—'):(parts||'—')));el.append(p);
-        };
-        const note=document.createElement('p');note.textContent=t('analysisDisclaimer');el.append(note);
-        if(!analysis.supported)add(t('analysisUnsupported'),analysis.notes);
-        else {add(t('solutions'),analysis.solutions);add(t('excluded'),analysis.excluded);add(t('conditions'),analysis.domain_conditions);if(analysis.notes?.length)add(t('notesAnalysis'),analysis.notes);}
-    }
-    async function saveEdits({silent=false}={}) {
-        if(!state.question)return;
-        const q=state.question;
-        const body={latex:$('latexEditor').value,engine_a:$('engineA').value,engine_b:$('engineB').value,notes:$('notesEditor').value,source_error:$('sourceError').checked};
-        const newq=await json(`/api/questions/${q.id}`,{method:'PATCH',body});
-        state.question=newq;state.questions=state.questions.map(r=>r.id===newq.id?newq:r);
-        state.dirty=false;renderQuestions();renderReviewStatus();
-        if(!silent)toast(t('saved'));
-        return newq;
-    }
-    async function withBusy(btn,callback) {
-        if(btn.disabled)return;
-        btn.disabled=true;const old=btn.style.opacity;btn.style.opacity='.6';
-        try {await callback();}
-        catch(err) {toast(err.message||t('failed'),true);}
-        finally {btn.disabled=false;btn.style.opacity=old;}
-    }
-    function zoomImage() {
-        const img=$('largeCrop');
-        img.style.width=`${Math.round((img.naturalWidth||500)*state.zoomLevel)}px`;
-        $('imageZoomLevel').textContent=Math.round(state.zoomLevel*100)+'%';
-    }
-    function wire() {
-        $('langBtn').addEventListener('click',()=>{state.lang=state.lang==='he'?'en':'he';localStorage.setItem('mathAuditLang',state.lang);localize();});
-        $('settingsBtn').addEventListener('click',openSettings);
-        $('connectBtn').addEventListener('click',async()=>{
-            const value=$('apiBaseInput').value.trim();
-            if(value && !/^https?:\/\//i.test(value)){toast(t('unexpected'),true);return;}
-            state.api=value;state.token=$('tokenInput').value;
-            localStorage.setItem('mathAuditAPI',state.api);sessionStorage.setItem('mathAuditToken',state.token);
-            $('settingsDialog').close();await refresh();
-        });
-        for (const id of ['uploadBtn','startUpload']) $(id).addEventListener('click',()=>$('fileInput').click());
-        $('fileInput').addEventListener('change',async e=>{
-            const files=[...e.target.files];if(!files.length)return;
-            toast(t('uploading'));
-            const form=new FormData();files.forEach(file=>form.append('files',file));
-            try {
-                const created=await json('/api/pages',{method:'POST',body:form,isForm:true});
-                state.page=created.pages[0]||null;state.question=null;state.dirty=false;
-                await refresh();
-            } catch(err){toast(err.message,true);}finally{e.target.value='';}
-        });
-        $('refreshBtn').addEventListener('click',()=>refresh());
-        $('pageZoomIn').addEventListener('click',()=>{state.pageZoom=Math.min(4,state.pageZoom*1.25);fitCanvas();});
-        $('pageZoomOut').addEventListener('click',()=>{state.pageZoom=Math.max(.6,state.pageZoom/1.25);fitCanvas();});
-        $('clearSelection').addEventListener('click',()=>{state.crop=null;$('cropAction').hidden=true;drawCanvas();});
-        $('pageCanvas').addEventListener('pointerdown',e=>{
-            if(!state.image)return;state.dragging=true;
-            state.origin=canvasPoint(e);state.crop=[...state.origin,...state.origin];
-            e.currentTarget.setPointerCapture(e.pointerId);drawCanvas();
-        });
-        $('pageCanvas').addEventListener('pointermove',e=>{
-            if(!state.dragging)return;const p=canvasPoint(e);state.crop=[...state.origin,...p];drawCanvas();
-        });
-        $('pageCanvas').addEventListener('pointerup',e=>{
-            if(!state.dragging)return;state.dragging=false;
-            state.crop=[...state.origin,...canvasPoint(e)];drawCanvas();updateCropUI();
-        });
-        $('pageCanvas').addEventListener('pointercancel',()=>{state.dragging=false;state.crop=null;drawCanvas();});
-        $('createCrop').addEventListener('click',()=>withBusy($('createCrop'),async()=>{
-            if(!state.page || !state.crop)return;
-            const [x0,y0,x1,y1]=state.crop;
-            const body={page_id:state.page.id,number:$('newQuestionNumber').value.trim()||'?',x0,y0,x1,y1};
-            const q=await json('/api/questions',{method:'POST',body});
-            state.crop=null;state.question=q;state.dirty=false;await refresh();drawCanvas();$('cropAction').hidden=true;toast(t('created'));
-            const next=parseInt(body.number,10);if(Number.isFinite(next))$('newQuestionNumber').value=String(next+1);
-        }));
-        $('batchOCR').addEventListener('click',()=>withBusy($('batchOCR'),async()=>{
-            if(!state.page)return;
-            const pending=state.questions.filter(q=>q.page_id===state.page.id&&q.status!=='verified'&&!q.latex&&!q.engine_a&&!q.engine_b);
-            if(!pending.length){toast(t('noBatch'));return;}
-            if(!state.providers.mathpix&&!state.providers.pix2text){toast(t('noProviders'),true);return;}
-            for(let i=0;i<pending.length;i++){
-                toast(`${i+1} / ${pending.length} · OCR`);
-                await json(`/api/questions/${pending[i].id}/ocr`,{method:'POST',body:{engines:['mathpix','pix2text'],enhance:$('ocrEnhance').checked}});
-            }
-            await refresh();toast(t('batchDone'));
-        }));
-        $('inventorySave').addEventListener('click',()=>withBusy($('inventorySave'),async()=>{
-            if(!state.page)return;
-            const updated=await json(`/api/pages/${state.page.id}/inventory`,{method:'PATCH',body:{expected_numbers:$('inventoryInput').value}});
-            state.page=updated;state.pages=state.pages.map(p=>p.id===updated.id?updated:p);
-            await loadCoverage();toast(t('coverageSaved'));
-        }));
-        $('deletePage').addEventListener('click',()=>withBusy($('deletePage'),async()=>{
-            if(!state.page||!confirm(t('confirmDelete')))return;
-            await json(`/api/pages/${state.page.id}`,{method:'DELETE'});state.page=null;state.question=null;await refresh();
-        }));
-        document.querySelectorAll('.filter-chip').forEach(b=>b.addEventListener('click',()=>{
-            state.filter=b.dataset.filter;document.querySelectorAll('.filter-chip').forEach(el=>el.classList.toggle('active',el===b));renderQuestions();
-        }));
-        $('zoomCrop').addEventListener('click',()=>{
-            if(!state.cropObjectUrl)return;
-            state.zoomLevel=1;
-            $('largeCrop').src=state.cropObjectUrl;
-            zoomImage();$('imageDialog').showModal();
-        });
-        $('imageClose').addEventListener('click',()=>$('imageDialog').close());
-        $('largeCrop').addEventListener('load', zoomImage);
-        $('zoomIn').addEventListener('click',()=>{state.zoomLevel=Math.min(3,state.zoomLevel+0.25);zoomImage();});
-        $('zoomOut').addEventListener('click',()=>{state.zoomLevel=Math.max(0.5,state.zoomLevel-0.25);zoomImage();});
-        $('useA').addEventListener('click',()=>{$('latexEditor').value=$('engineA').value;state.dirty=true;schedulePreview();});
-        $('useB').addEventListener('click',()=>{$('latexEditor').value=$('engineB').value;state.dirty=true;schedulePreview();});
-        for (const id of ['latexEditor','engineA','engineB','notesEditor']) $(id).addEventListener('input',()=>{state.dirty=true;if(id==='latexEditor')schedulePreview();});
-        $('sourceError').addEventListener('change',()=>state.dirty=true);
-        $('saveQuestion').addEventListener('click',()=>withBusy($('saveQuestion'),()=>saveEdits()));
-        $('runOcr').addEventListener('click',()=>withBusy($('runOcr'),async()=>{
-            if(state.dirty && !confirm(t('unsaved')))return;
-            const data=await json(`/api/questions/${state.question.id}/ocr`,{method:'POST',body:{engines:['mathpix','pix2text'],enhance:$('ocrEnhance').checked}});
-            state.question=data.question;state.questions=state.questions.map(q=>q.id===state.question.id?state.question:q);
-            await renderReview();renderQuestions();toast(t('ocrDone'));
-        }));
-        $('analyzeQuestion').addEventListener('click',()=>withBusy($('analyzeQuestion'),async()=>{
-            if(state.dirty)await saveEdits({silent:true});
-            const result=await json(`/api/questions/${state.question.id}/analyze`,{method:'POST',body:{}});
-            state.question.analysis=result;renderAnalysis(result);toast(t('analyzeReady'));
-        }));
-        $('verifyQuestion').addEventListener('click',()=>withBusy($('verifyQuestion'),async()=>{
-            if(state.dirty)await saveEdits({silent:true});
-            const checks=Object.fromEntries([...document.querySelectorAll('[data-check]')].map(el=>[el.dataset.check,el.checked]));
-            if(Object.values(checks).some(v=>!v)){toast(t('checkAll'),true);return;}
-            const reviewer=$('reviewerInput').value.trim();if(reviewer.length<2){toast(t('reviewNameRequired'),true);return;}
-            localStorage.setItem('mathAuditReviewer',reviewer);
-            state.question=await json(`/api/questions/${state.question.id}/verify`,{method:'POST',body:{reviewer,checks}});
-            await refresh();toast(t('verifySuccess'));
-        }));
-        $('unverifyQuestion').addEventListener('click',()=>withBusy($('unverifyQuestion'),async()=>{
-            state.question=await json(`/api/questions/${state.question.id}/unverify`,{method:'POST',body:{}});
-            await refresh();
-        }));
-        $('deleteQuestion').addEventListener('click',()=>withBusy($('deleteQuestion'),async()=>{
-            if(!state.question||!confirm(t('confirmDelete')))return;
-            await json(`/api/questions/${state.question.id}`,{method:'DELETE'});
-            state.question=null;await refresh();
-        }));
-        $('exportBtn').addEventListener('click',()=>$('exportDialog').showModal());
-        $('exportClose').addEventListener('click',()=>$('exportDialog').close());
-        document.querySelectorAll('[data-export]').forEach(button=>button.addEventListener('click',()=>withBusy(button,async()=>{
-            await download(button.dataset.export);$('exportDialog').close();
-        })));
-        window.addEventListener('resize',()=>{if(state.image)fitCanvas();});
-        window.addEventListener('beforeunload',e=>{if(state.dirty){e.preventDefault();e.returnValue='';}});
-    }
-    function openSettings() {
-        $('apiBaseInput').value=state.api;$('tokenInput').value=state.token;$('settingsDialog').showModal();
-    }
-    async function init() {
-        localize();wire();
-        // GitHub Pages cannot host the Python API. Let the user set its URL.
-        if(location.hostname.endsWith('github.io') && !state.api) {
-            openSettings();toast(t('unexpected'),true);return;
-        }
-        await refresh();
-    }
-    document.addEventListener('DOMContentLoaded',init);
-})();
+    $('zoomBtn').onclick=()=>{
+        const q=existingQuestion();if(!q)return;
+        revoke(state.zoomURL);state.zoomURL=URL.createObjectURL(q.blob);
+        $('zoomImage').src=state.zoomURL;$('zoomDialog').showModal();
+    };
+    $('zoomDialog').addEventListener('close',()=>{revoke(state.zoomURL);state.zoomURL=null;});
+    $('backupBtn').onclick=()=>guard(()=>exportZip(state.pages,state.questions,{backup:true}));
+    $('exportBtn').onclick=()=>$('exportDialog').showModal();
+    for(const b of document.querySelectorAll('.close-dialog'))b.onclick=()=>b.closest('dialog').close();
+    for(const b of document.querySelectorAll('[data-export]'))b.onclick=()=>guard(async()=>{
+        const only=!$('includePending').checked;
+        if(b.dataset.export==='zip')await exportZip(state.pages,state.questions,{verifiedOnly:only});
+        else exportPlain(b.dataset.export,state.questions,only);
+        $('exportDialog').close();
+    });
+    $('restoreBtn').onclick=()=>$('backupInput').click();
+    $('backupInput').onchange=()=>guard(async()=>{
+        const file=$('backupInput').files[0];if(!file)return;
+        const restored=await loadBackup(file);
+        if(!confirm(state.lang==='he'?'שחזור יחליף את כל הנתונים. להמשיך?':'Replace all local data with backup?'))return;
+        await replaceAll(restored.pages,restored.questions);
+        state.pages=restored.pages;state.questions=restored.questions;state.pageId=null;state.questionId=null;state.dirty=false;
+        await selectPage(state.pages[0]?.id||null);$('exportDialog').close();
+        notify(state.lang==='he'?'הגיבוי שוחזר':'Backup restored');updateStorage();
+        $('backupInput').value='';
+    });
+    window.addEventListener('beforeunload',e=>{if(state.dirty){e.preventDefault();e.returnValue='';}});
+    initDrag();
+}
+async function guard(fn){
+    if(state.busy)return;
+    try{await fn();}catch(err){console.error(err);notify(err?.message||String(err),true);}
+}
+async function boot(){
+    registerEvents();localize();
+    try{
+        await openDatabase();
+        [state.pages,state.questions]=await Promise.all([listPages(),listQuestions()]);
+        state.pages.sort((a,b)=>(a.createdAt||'').localeCompare(b.createdAt||''));
+        await selectPage(state.pages[0]?.id||null);
+        updateStorage();
+    }catch(error){notify('Browser storage unavailable: '+error.message,true);}
+}
+boot();

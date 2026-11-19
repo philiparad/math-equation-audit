@@ -1,178 +1,73 @@
-# MathAudit — audited mathematical equation extraction
+# MathAudit — 100% browser application (GitHub Pages)
 
-**MathAudit is a full-stack, Hebrew/English, human-verified mathematical OCR application.** It accepts scanned page images and PDFs, supports precise question cropping, compares independent OCR engines, renders editable LaTeX, performs conservative algebraic checks, and exports verified equations with source crops and audit metadata.
+This branch is the **serverless** replacement for the original FastAPI + SQLite application. The original server-based implementation remains on the `main` branch; **no web server, Render service, API proxy, database or paid hosting is required for core operations**.
 
-**Design rule:** OCR is never evidence of correctness by itself. Every question starts as `needs_review`, including when both engines agree. A reviewer must explicitly compare the equation against the original scan, check four items, and enter their name before the application will label it `verified`. This label certifies a human-reviewed **transcription**, not that the source textbook contains correct mathematics.
+## Features implemented
 
-## Features
+- Read images (PNG, JPEG, WebP) and multi-page PDFs (PDF.js) in the browser, max 35 MB and 30 pages per PDF.
+- Crop questions at full source image resolution using mouse or touch; original imported scan is never overwritten.
+- Save pages, cropped questions, OCR outputs, checks, notes and reviewer status in **IndexedDB**.
+- Run **Texify2** ONNX on-device using Transformers.js as the default OCR engine; **TexTeller** ONNX is an optional independent local recognition engine. Requires downloading large model weights over HTTPS on first use. Neither provider receives your input images through an inference API; weights are downloaded and processing executes locally. WebGPU opt-in, with CPU/WASM fallback. First downloads and inference can be slow and memory intensive; choose a recent Chrome/Edge machine.
+- Optionally submit a cropped question to **Mathpix** using a **short-lived `app_token`**, pasted into Settings. Do NOT paste or commit `app_key`/`app_id` secrets. Short-lived tokens must be minted by a trusted issuer. Without one, the application remains fully usable with local OCR.
+- Compare OCR results without conflating mathematical equivalence with exact transcription.
+- Edit final LaTeX and render with MathJax; evaluate a deliberately narrow algebra subset using **SymPy running inside Pyodide in a Web Worker** (downloads from jsDelivr). No arbitrary `eval` / user-supplied Python execution.
+- Human visual verification requires 4 affirmative checks, reviewer name and nonempty LaTeX; editing final LaTeX, or rerunning OCR, revokes the verified status.
+- Expected exercise inventory identifies missing/duplicate/unexpected labels.
+- Export verified-only by default as CSV/JSON/TEX or ZIP including original scans and crops; export a full backup ZIP of **all** work (including pending) and restore it atomically after user confirmation.
+- Hebrew / English controls, responsive layouts, high-resolution original viewer, quota indication, request for persistent browser storage.
 
-- Upload PNG, JPEG, WebP, TIFF or multipage PDF (30 pages / file, 35 MB / file).
-- Zoomable original scanned page, draw crop rectangles around whole numbered questions, keep original image unchanged.
-- Run independent Mathpix and Pix2Text OCR, separately or together. No API keys in browser code.
-- Run batch OCR over **new, blank question crops** on a selected page without overwriting existing transcription work; optionally enhance contrast without changing source images.
-- Review OCR results side by side, edit LaTeX and see a MathJax preview.
-- Magnify the original crop at 50–300% and zoom the full page for accurate cropping.
-- Optional SymPy checks for a deliberately restricted subset of algebra: simple equations, rational expressions, excluded denominators, and low-degree polynomial solutions. No code execution of arbitrary LaTeX.
-- Flag likely source textbook errors and add notes without silently changing the printed equation.
-- Track expected exercise-number ranges (e.g. `15-36`), identify missing, unexpected and duplicate question numbers before export.
-- Require a named reviewer and four visual checks to approve; editing a verified equation automatically reopens review.
-- Export verified records by default as ZIP (JSON manifest, original page PNGs, question crops, CSV, LaTeX), or direct JSON/CSV/TEX. Optional explicitly labeled unverified export.
-- SQLite data store, authenticated API for public deployments, responsive RTL / LTR bilingual UI.
-- Dockerfile, Render blueprint, GitHub Actions tests and optional GitHub Pages frontend deployment.
+## Deployment
 
-## Run locally (Windows PowerShell)
+The branch `browser-only` contains `.github/workflows/pages.yml`. On pushes to that branch it tests the browser files and deploys `frontend/` to GitHub Pages.
 
-Install **Python 3.11–3.13**. You can run `powershell -ExecutionPolicy Bypass -File .\scripts\start_windows.ps1` from the project folder, or use these commands in PowerShell:
+1. Open **Settings → Pages** on the GitHub repository and set **Source: GitHub Actions**.
+2. Check **Actions** for the `Test and deploy serverless MathAudit to GitHub Pages` run and resolve any repository-side permissions or Pages activation requirement.
+3. Published address, once successful: `https://philiparad.github.io/math-equation-audit/`.
 
-```powershell
-py -m venv .venv
-.venv\Scripts\Activate.ps1
-python -m pip install --upgrade pip
-pip install -r requirements.txt
-Copy-Item .env.example .env
-python -m uvicorn backend.app:app --env-file .env --reload --host 127.0.0.1 --port 8000
-```
+This site is a static, public interface; user scans are not in the Git repository. Do not commit scanned copyrighted textbook pages.
 
-Open **http://127.0.0.1:8000**. This starts with manual transcription and algebraic checking even without an OCR service. Local `.env` defaults to `APP_ENV=development`, no authentication. Do not expose that development instance to the internet.
+### Run locally without any application backend
 
-Linux/macOS equivalent:
+Browsers require HTTP(S) for ES Modules, workers, and IndexedDB. In the repo root:
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-cp .env.example .env
-python -m uvicorn backend.app:app --env-file .env --reload --host 127.0.0.1 --port 8000
+python -m http.server 8000 --directory frontend
+# Open http://localhost:8000
 ```
 
-### Enable Mathpix
+This local command only serves static files for development. It is **not** an application server, and is unnecessary with GitHub Pages. For tests, `npm test` and `npm run check` require Node.js 22+, but deployed runtime is plain HTML/CSS/JavaScript (no Node.js server).
 
-Create OCR API credentials at [Mathpix Console](https://console.mathpix.com/). Put `MATHPIX_APP_ID` and `MATHPIX_APP_KEY` **only in `.env` or your hosting provider's secret environment variables**. Restart the server. Mathpix is an external service with its own quotas/pricing and data-processing policies; uploaded image crops are transmitted to Mathpix when you run that engine.
+### External assets (CDN)
 
-### Enable Pix2Text (optional, independent local OCR)
+- `@huggingface/transformers@4.3.2` ESM loaded on first local OCR request, and ONNX model weights downloaded from Hugging Face.
+- `pdfjs-dist@6.5.438` ESM loaded for PDF imports.
+- `pyodide/v0.28.3/full/` and SymPy package loaded for algebraic checks.
+- `mathjax@3.2.2` loaded for equation display.
+- `jszip@3.10.1` dynamically loaded for ZIP export and backup restoration.
+
+These libraries and model weights need an internet connection **for initial downloads**. After downloads, cache behavior is controlled by the browser; offline operation is not guaranteed. Browser policy/CORS/CDN outages can prevent first loads. No OCR recognition is claimed until the models actually load and return output. Using hosted CDN files does not mean hosting an application backend.
+
+## Privacy and security
+
+- Input scans stay in IndexedDB and are not transmitted during local OCR, image/PDF processing, verification or export.
+- When you **explicitly** click Mathpix, only that cropped image goes to Mathpix. An account may be charged; review Mathpix's pricing and data policy.
+- Never put a long-lived Mathpix `app_key` in public code, localStorage, GitHub secrets exposed to browser JS, or the Settings token field. The Settings field accepts a short-lived `app_token` only; it is held in memory and expires automatically server-side.
+- No user authentication: all reviews on the device share one local data store. Browser profile clearing/incognito/quota eviction can lose the entire local dataset. Back up regularly. For multiple teachers or synchronized work, use a different architecture.
+- Browser storage is per origin, so the GitHub Pages site and localhost have **different datasets**.
+- `verified` means reviewer-attested matching to the scan, **not proof that the original textbook is mathematically correct**.
+
+## Limitations and quality gates
+
+- Entire-page automatic equation segmentation and OCR accuracy benchmarking are **not provided**; question crops and source-image comparison are manual by design.
+- Large models need memory and may fail on lower-end laptops, phones or browsers. Texify2 and TexTeller have not been benchmarked against the supplied four textbook scans in an online browser environment. OCR accuracy is unverified until hands-on testing.
+- SymPy covers single-variable algebra only (simple equations, factors, low-degree polynomials and excluded denominator values); systems, trig, inequalities, some roots and narrative math need manual review.
+- This is a standalone browser application, not a synchronized cloud database.
+
+## Verify locally
 
 ```bash
-pip install -r requirements-ocr.txt
+npm run check
+npm test
 ```
 
-The package is optional because its AI dependencies and model downloads are large. The first call can download models and be slow. A capable CPU machine or GPU host is preferable. Deploying it on a resource-constrained free web host may fail; you can run it locally or omit it and manually verify the Mathpix output. Installing Pix2Text does not make Mathpix free or bypass human review.
-
-## Workflow
-
-1. **Upload** scans or a PDF; PDF pages become individual PNG source pages.
-2. **Choose a page**, set expected question numbers (if known), zoom as needed, and drag around each complete question. Do not cut off the number, left-hand side, fraction bars, powers or any denominator. Type the printed question number and save the crop.
-3. **Run OCR** on that crop or press **OCR all new questions** after creating several crops. The engines' text and any differences remain visible. You can instead type LaTeX manually.
-4. **Inspect** the full-resolution original crop, compare all digits/signs/powers/fractions, and correct the editable LaTeX. Save.
-5. **Check coverage** against the exercise-number inventory. Fix missing or duplicate crops before final export.
-6. **Analyze** supported equations with SymPy to get *advisory* solutions and domain restrictions. Nontrivial systems and uncommon notation must be checked manually.
-7. **Approve** only after checking all four visual-verification items and entering a reviewer name. A possible error in the original must be documented in Notes.
-8. **Export** as ZIP/CSV/JSON/LaTeX; by default unverified questions are excluded.
-
-Question numbers remain exactly as entered (e.g. `15`, `90a`, `עמוד 165 – 4`). Gaps in textbook numbering are not interpreted as missing questions. The app **does not claim automatic exhaustive equation detection from entire pages**; it intentionally uses explicit crops for source fidelity.
-
-## Push the project to a new GitHub repository
-
-Create an empty private repository on GitHub (without a generated README), then from the extracted project folder:
-
-```bash
-git init
-git add .
-git commit -m "Initial MathAudit project"
-git branch -M main
-git remote add origin https://github.com/YOUR_USERNAME/math-equation-audit.git
-git push -u origin main
-```
-
-The `data/`, `.env` and cache directories are excluded by `.gitignore`. Commit only source, test files, and the original **synthetic** demo image. Never commit privately scanned textbook pages or OCR service keys.
-
-## GitHub deployment options
-
-### Option A — one GitHub repository → Render web app (recommended)
-
-GitHub **hosts the code**; Render **runs Python** and serves both the UI and API.
-
-1. Create a new private GitHub repo, e.g. `math-equation-audit`; upload/push this project **without** `.env` or `data/`.
-2. On [Render](https://render.com), create a new **Blueprint** or Python web service linked to the repo. `render.yaml` provides the build and start commands.
-3. Configure environment variables on Render: `APP_ENV=production`, a long random `APP_ACCESS_TOKEN`, and optional `MATHPIX_APP_ID`/`MATHPIX_APP_KEY`.
-4. **Attach persistent storage** and set `DATA_DIR` to its mounted directory (blueprint example `/var/data/math-equation-audit`). **This is necessary.** A service using ephemeral filesystem storage will lose database and uploaded images on restart/redeploy. Confirm pricing and disk availability for your Render plan.
-5. Open the Render URL over HTTPS. In Settings, enter the server access token. Do not embed it in any committed file.
-6. For a public server, limit access to trusted reviewers, use a strong token and HTTPS, and back up the persistent data directory regularly.
-
-For a service deployed without attached storage, the app may start but **data durability is not guaranteed**. Do not use it for a real review workload until storage is configured.
-
-### Option B — GitHub Pages frontend + Render API
-
-GitHub Pages only hosts **HTML/CSS/JavaScript**; it cannot run FastAPI, SQLite or SymPy. The project includes `.github/workflows/pages.yml` for an optional static Pages deployment. Enable Pages → Source: **GitHub Actions**. The frontend can be publicly visible, but API access is gated by the server token.
-
-1. Deploy the backend as described in Option A.
-2. Set `CORS_ORIGINS=https://YOUR_USERNAME.github.io` in the backend environment and redeploy.
-3. GitHub Actions publishes the `frontend/` directory. Open your Pages URL.
-4. Click **Settings** and enter the Render API base URL and your access token. The API base URL is saved locally in browser storage; the token is kept in `sessionStorage` only.
-5. Optionally set a **public backend address** in `frontend/config.js` for your own deployment. **Never set API keys or access tokens in this file.**
-
-**Recommended:** Option A is easier to operate and avoids cross-origin configuration.
-
-### Option C — Docker on a VPS / local server
-
-```bash
-docker build -t mathaudit .
-docker run --rm -p 8000:8000 \
-  -e APP_ENV=production \
-  -e APP_ACCESS_TOKEN='REPLACE_WITH_RANDOM_LONG_TOKEN' \
-  -e DATA_DIR=/var/data/math-equation-audit \
-  -v mathaudit-data:/var/data \
-  mathaudit
-```
-
-Use HTTPS via a reverse proxy for internet access. To pass Mathpix credentials, use deployment secrets, not command history.
-
-## Tests
-
-```bash
-pip install pytest
-pytest -q
-```
-
-The tests cover the API lifecycle, OCR disagreements (mocked), PDF import, manual verification, re-review upon edits, protected routes, ZIP exports, and symbolic parsing. **Live Mathpix and Pix2Text recognition require credentials/models and are not exercised by CI.**
-
-## Directory structure
-
-```text
-math-equation-audit/
-├── backend/
-│   ├── app.py              # FastAPI API, images, verification, exports
-│   ├── storage.py          # SQLite and filesystem storage
-│   ├── ocr.py              # Mathpix + optional Pix2Text
-│   └── mathcheck.py        # Conservative symbolic expression parser
-├── frontend/
-│   ├── index.html          # RTL/LTR responsive review application
-│   ├── app.css             # Responsive styling
-│   ├── app.js              # Crop / review / export interactive workflow
-│   ├── config.js           # Public backend address ONLY
-│   └── favicon.svg
-├── tests/                  # Automated Python tests
-├── docs/                   # Quality, security, and API guides
-├── .github/workflows/      # CI and optional Pages deployment
-├── Dockerfile
-├── render.yaml
-├── requirements.txt
-└── requirements-ocr.txt
-```
-
-## Accuracy guarantees and limitations
-
-- **Cannot guarantee zero OCR errors.** Both independent engines can make the same mistake, particularly with noisy scans, exponent digits, decimal points, negatives and denominator boundaries.
-- **No auto-verification.** Only explicit image-to-LaTeX review is treated as verified. Reviewer self-attestation is an audit workflow, not an independent objective proof.
-- Algebraic equivalence of two transcripts does **not** establish that either matches the image.
-- The symbolic engine supports only a controlled subset of algebra; general radicals, trigonometric functions, inequalities, simultaneous systems, multiline environments and textual explanations need manual checking. Unsupported forms are flagged, never silently passed.
-- Crop suggestions / complete automatic equation segmentation are intentionally **not implemented**; manually confirm that every numbered exercise was cropped. For large books, reconcile against a manually prepared numbering checklist.
-- The original images, OCR predictions and corrected final LaTeX are separate fields; suspect textbook errors should be marked and explained, not silently rewritten.
-- The MathJax viewer uses a CDN; the app needs internet access for formatted preview unless you self-host MathJax. Raw LaTeX remains editable if the CDN is unavailable.
-- Uploaded scans may be copyrighted; do **not** commit or publicly publish those scans without permission. By default all uploads are stored under ignored `data/`.
-- The current security model is **single-user shared-token access**, not multi-account RBAC. For classrooms or untrusted public access, add individual accounts, rate limiting, auditing of every mutation and quotas.
-
-See [docs/QUALITY_PROTOCOL.md](docs/QUALITY_PROTOCOL.md), [docs/SECURITY.md](docs/SECURITY.md), and [docs/API.md](docs/API.md).
-
-## Built-in demonstration image
-
-Upload [`examples/demo_practice_page.png`](examples/demo_practice_page.png) to test cropping and rendering without publishing or relying on copyrighted textbook scans. It contains six original typeset rational equations in two columns. This is a source image **only**, not a pre-verified OCR result.
+A browser smoke test can be executed via Chromium with a static HTTP server. For the actual ONNX models and Mathpix, use real browser network access and an actual short-lived token respectively, then compare their output to each scanned crop.
